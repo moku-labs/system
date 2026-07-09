@@ -9,5 +9,8 @@
  * const system = createApp({ plugins: [storePlugin] });
  * ```
  */
+/**
+ * Key-value persistence plugin instance (Tauri store file / IndexedDB) — compose it via `createApp({ plugins: [storePlugin] })`.
+ */
 export { storePlugin } from "./plugins/store";
 export type * as Store from "./plugins/store/types";

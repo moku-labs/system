@@ -9,5 +9,8 @@
  * const system = createApp({ plugins: [clipboardPlugin] });
  * ```
  */
+/**
+ * Text clipboard plugin instance (feature-probed; NotAllowedError maps to "denied") — compose it via `createApp({ plugins: [clipboardPlugin] })`.
+ */
 export { clipboardPlugin } from "./plugins/clipboard";
 export type * as Clipboard from "./plugins/clipboard/types";

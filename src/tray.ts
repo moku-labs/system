@@ -9,5 +9,8 @@
  * const system = createApp({ plugins: [trayPlugin] });
  * ```
  */
+/**
+ * Desktop system-tray plugin instance (typed "unsupported" on web and Tauri mobile) — compose it via `createApp({ plugins: [trayPlugin] })`.
+ */
 export { trayPlugin } from "./plugins/tray";
 export type * as Tray from "./plugins/tray/types";

@@ -9,5 +9,8 @@
  * const system = createApp({ plugins: [notifyPlugin] });
  * ```
  */
+/**
+ * Notification plugin instance (explicit permission flow; show() never auto-prompts) — compose it via `createApp({ plugins: [notifyPlugin] })`.
+ */
 export { notifyPlugin } from "./plugins/notify";
 export type * as Notify from "./plugins/notify/types";

@@ -25,8 +25,7 @@ stateless helper modules — not cross-plugin state access.
 
 ## Configuration
 
-Both fields default to `null` (auto-detect). Override via `pluginConfigs: { runtime: { ... } }`
-at the `createApp` level (see the force-testing rule below for `forceKind`).
+Both fields default to `null` (auto-detect).
 
 ```ts
 type RuntimeConfig = {
@@ -35,14 +34,18 @@ type RuntimeConfig = {
 };
 ```
 
-```ts
-import { createApp } from "@moku-labs/system";
-import { storePlugin } from "@moku-labs/system/store";
+`runtime` is a **core plugin**, so its config is fixed at the framework layer — it is NOT
+reachable through `createApp`'s `pluginConfigs` (which keys over regular capability plugins
+only). The force overrides are used by the framework's own test suite, which composes the
+core directly. Consumer tests make detection deterministic by stubbing the environment
+**before** `app.start()` instead:
 
-const system = createApp({
-  plugins: [storePlugin],
-  pluginConfigs: { runtime: { forceKind: "web" } } // e.g. in vitest
-});
+```ts
+// Force "tauri": define the shell marker detectKind() reads (pair with @tauri-apps/* mocks).
+vi.stubGlobal("__TAURI_INTERNALS__", {});
+// Force a platform: stub the user-agent detectPlatform() reads.
+vi.stubGlobal("navigator", { userAgent: "...Macintosh..." });
+// Force "web": simply run without the marker (the default in vitest/Node).
 ```
 
 **Force-testing rule:** forcing `forcePlatform` alone is safe standalone. Forcing `forceKind: "tauri"`

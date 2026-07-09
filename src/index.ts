@@ -28,6 +28,11 @@ export type {
   SystemResult
 } from "./plugins/runtime/result";
 // ─── Public contract (SystemResult seam) ─────────────────────
+/**
+ * `SystemResult` construction helpers — `ok(value, provider)` builds a success outcome,
+ * `err(provider, reason, message?)` a typed failure. Re-exported from the runtime seam so
+ * consumers and consumer plugins can produce contract-conformant results.
+ */
 export { err, ok } from "./plugins/runtime/result";
 export type * as Store from "./plugins/store/types";
 export type * as Tray from "./plugins/tray/types";

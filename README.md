@@ -159,15 +159,17 @@ const unsubscribe = system.deepLink.onOpen(({ url }) => route(url));
 
 ### Forcing the runtime (tests, storybooks)
 
-The `runtime` core plugin auto-detects — but takes force overrides through `pluginConfigs`, making every provider decision deterministic under test:
+The `runtime` core plugin detects the shell from the environment — `"tauri"` when the `__TAURI_INTERNALS__` marker exists on `globalThis`, `"web"` otherwise, and the platform from the user-agent. Consumer tests make provider decisions deterministic by stubbing that environment **before** the app starts (core-plugin config is fixed at the framework layer and not overridable from `createApp`):
 
 ```ts
+// Force "tauri" detection: define the shell marker before start() — and pair it with
+// mocks of the @tauri-apps/* modules your capabilities load (see each plugin README).
+vi.stubGlobal("__TAURI_INTERNALS__", {});
+
+// Force "web" detection: simply run without the marker (the default in vitest/Node).
 const app = createApp({
   plugins: [storePlugin],
-  pluginConfigs: {
-    store: { name: "test-db" },
-    runtime: { forceKind: "web", forcePlatform: "macos" }
-  }
+  pluginConfigs: { store: { name: "test-db" } }
 });
 ```
 
