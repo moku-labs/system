@@ -1,23 +1,20 @@
 /**
- * @file store plugin — state factory skeleton.
+ * @file store plugin — state factory. The resolution slot starts empty; onStart
+ * populates it synchronously via startResolution (spec/02 §State).
  */
-import type { StoreConfig, StoreState } from "./types";
+import type { StoreState } from "./types";
 
 /**
  * Creates the initial store state: an empty resolution slot (provider: null) that
  * onStart populates via startResolution.
  *
- * @param {object} _ctx - Minimal context.
- * @param {object} _ctx.global - Frozen global config.
- * @param {object} _ctx.config - Resolved store config.
+ * @returns {StoreState} The initial state with no resolved provider yet.
  * @example
  * ```ts
- * const state = createStoreState({ global: {}, config: { name: "moku-system" } });
+ * const state = createStoreState(); // { provider: null }
  * ```
  */
-export function createStoreState(_ctx: {
-  readonly global: Readonly<Record<string, unknown>>;
-  readonly config: Readonly<StoreConfig>;
-}): StoreState {
-  throw new Error("not implemented");
+export function createStoreState(): StoreState {
+  // eslint-disable-next-line unicorn/no-null -- ResolutionState.provider is null until onStart (seam contract)
+  return { provider: null };
 }
