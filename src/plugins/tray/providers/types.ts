@@ -11,6 +11,12 @@ export const TRAY_METHODS = ["setMenu", "setTooltip", "setIcon", "destroy"] as c
 /**
  * Structural tray provider contract (satisfies CapabilityProvider via dispose).
  *
+ * Method-shorthand syntax (not arrow-property syntax) is deliberate: TypeScript
+ * checks method-shorthand members bivariantly, which is what lets the shared
+ * `unsupportedProvider("web" | "tauri", TRAY_METHODS)` stand-in (typed
+ * `Record<M, (...args: never[]) => Promise<SystemErr>>`) satisfy this interface —
+ * arrow-property members are checked contravariantly and would reject it.
+ *
  * @example
  * ```ts
  * const provider: TrayProvider = createWebTrayProvider();
@@ -18,13 +24,13 @@ export const TRAY_METHODS = ["setMenu", "setTooltip", "setIcon", "destroy"] as c
  */
 export type TrayProvider = {
   /** Replace the tray menu. */
-  setMenu: (items: TrayMenuItem[]) => Promise<SystemResult<void>>;
+  setMenu(items: TrayMenuItem[]): Promise<SystemResult<void>>;
   /** Set hover tooltip text. */
-  setTooltip: (text: string) => Promise<SystemResult<void>>;
+  setTooltip(text: string): Promise<SystemResult<void>>;
   /** Set the tray icon by path. */
-  setIcon: (iconPath: string) => Promise<SystemResult<void>>;
+  setIcon(iconPath: string): Promise<SystemResult<void>>;
   /** Remove the tray icon. */
-  destroy: () => Promise<SystemResult<void>>;
+  destroy(): Promise<SystemResult<void>>;
   /** Destroys the OS icon if present (idempotent with destroy()). */
-  dispose: () => Promise<void>;
+  dispose(): Promise<void>;
 };

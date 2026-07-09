@@ -133,6 +133,50 @@ describe("createTauriStoreProvider", () => {
     expect(fakeStore.save).not.toHaveBeenCalled();
   });
 
+  it("maps a delete throw to reason 'error' with the message preserved, never 'denied'", async () => {
+    fakeStore.delete.mockRejectedValue(new Error("delete unavailable"));
+    const log = createMockLog();
+    const provider = await createTauriStoreProvider({ name: "n" }, log);
+
+    const result = await provider.delete("k");
+
+    expect(result).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "error",
+      message: "delete unavailable"
+    });
+    expect(result.ok ? undefined : result.reason).not.toBe("denied");
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call save() when delete() itself throws", async () => {
+    fakeStore.delete.mockRejectedValue(new Error("boom"));
+    const provider = await createTauriStoreProvider({ name: "n" }, createMockLog());
+
+    await provider.delete("k");
+
+    expect(fakeStore.save).not.toHaveBeenCalled();
+  });
+
+  it("wraps a non-Error throw into an Error for log.error while still mapping the result", async () => {
+    fakeStore.get.mockRejectedValue("plain string rejection");
+    const log = createMockLog();
+    const provider = await createTauriStoreProvider({ name: "n" }, log);
+
+    const result = await provider.get("k");
+
+    expect(result).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "error",
+      message: "plain string rejection"
+    });
+    const loggedError = vi.mocked(log.error).mock.calls[0]?.[2];
+    expect(loggedError).toBeInstanceOf(Error);
+    expect(loggedError?.message).toBe("plain string rejection");
+  });
+
   it("maps a get throw to reason 'error'", async () => {
     fakeStore.get.mockRejectedValue(new Error("read error"));
     const provider = await createTauriStoreProvider({ name: "n" }, createMockLog());
@@ -145,6 +189,49 @@ describe("createTauriStoreProvider", () => {
       reason: "error",
       message: "read error"
     });
+  });
+
+  it("maps a keys throw to reason 'error' with the message preserved, never 'denied'", async () => {
+    fakeStore.keys.mockRejectedValue(new Error("keys unavailable"));
+    const log = createMockLog();
+    const provider = await createTauriStoreProvider({ name: "n" }, log);
+
+    const result = await provider.keys();
+
+    expect(result).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "error",
+      message: "keys unavailable"
+    });
+    expect(result.ok ? undefined : result.reason).not.toBe("denied");
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a clear throw to reason 'error' with the message preserved, never 'denied'", async () => {
+    fakeStore.clear.mockRejectedValue(new Error("clear unavailable"));
+    const log = createMockLog();
+    const provider = await createTauriStoreProvider({ name: "n" }, log);
+
+    const result = await provider.clear();
+
+    expect(result).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "error",
+      message: "clear unavailable"
+    });
+    expect(result.ok ? undefined : result.reason).not.toBe("denied");
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call save() when clear() itself throws", async () => {
+    fakeStore.clear.mockRejectedValue(new Error("boom"));
+    const provider = await createTauriStoreProvider({ name: "n" }, createMockLog());
+
+    await provider.clear();
+
+    expect(fakeStore.save).not.toHaveBeenCalled();
   });
 
   it("dispose is a no-op that resolves", async () => {
