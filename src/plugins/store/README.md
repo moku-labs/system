@@ -6,25 +6,31 @@ The **template capability** for `@moku-labs/system`: every other capability plug
 `clipboard`, `tray`, `deep-link`) copies its `providers/` anatomy, `SystemResult` type-threading,
 and resolution lifecycle. At runtime it selects a provider once, based on `ctx.runtime.kind`:
 
-- **Tauri provider** (`providers/tauri.ts`) — persists to a store file (`${name}.json`) via
-  `@tauri-apps/plugin-store`, loaded with `autoSave` disabled. Every mutation (`set`/`delete`/`clear`)
-  awaits `store.save()` before resolving `ok`, so a crash never loses a write the caller already
-  saw succeed.
-- **Web provider** (`providers/web.ts`) — persists to IndexedDB via `idb-keyval`. Runs a one-time
-  write-probe at resolution (`set` + `del` a sentinel key) so a near-zero-quota environment (e.g.
-  Safari private browsing) surfaces as a deterministic `"unavailable"` at startup instead of a
-  random throw on some later caller's method call.
+- **Tauri provider** (`providers/tauri.ts`) — persists to a store file (`${name}.json`) via a lazy
+  `import("@tauri-apps/plugin-store")`, loaded with `autoSave` disabled. Every mutation
+  (`set`/`delete`/`clear`) awaits `store.save()` before resolving `ok`, so a crash never loses a
+  write the caller already saw succeed.
+- **Web provider** (`providers/web.ts`) — persists to IndexedDB via `idb-keyval`
+  (`createStore(name, "kv")`). Runs a one-time write-probe at resolution (`set` + `del` a sentinel
+  key) so a near-zero-quota environment (e.g. Safari private browsing) surfaces as a deterministic
+  `"unavailable"` at startup instead of a random throw on some later caller's method call.
 
 Both providers satisfy the same structural `StoreProvider` interface (`providers/types.ts`), so
 island/consumer code calling `app.store.*` behaves identically regardless of which shell it runs in.
 
-## API
+## Usage
 
-All methods are mounted at `app.store` and return `Promise<SystemResult<...>>` — environmental
-failures (unavailable, unsupported, error) are typed data, never a thrown surprise.
+The plugin instance lives at the subpath export (D-011c) — importing from the root is not possible
+(the root barrel would drag unused capabilities into pure-web bundles):
 
 ```ts
-const system = createApp({ plugins: [storePlugin] });
+import { createApp } from "@moku-labs/system";
+import { storePlugin } from "@moku-labs/system/store";
+
+const system = createApp({
+  plugins: [storePlugin],
+  pluginConfigs: { store: { name: "my-app" } }
+});
 await system.start();
 
 const r = await system.store.get<number>("count");
@@ -40,11 +46,19 @@ await system.store.keys();
 await system.store.clear();
 ```
 
+Types come from the root (`SystemResult`, `JsonValue`, the `Store` namespace) or from the subpath
+(`import type { Store } from "@moku-labs/system/store"`).
+
+## API
+
+All methods are mounted at `app.store` and return `Promise<SystemResult<...>>` — environmental
+failures are typed data, never a thrown surprise.
+
 | Method | Signature | Notes |
 |--------|-----------|-------|
 | `get`    | `<T extends JsonValue = JsonValue>(key: string) => Promise<SystemResult<T \| undefined>>` | `ok(undefined)` when the key is absent. `T` is a compile-time assertion only — no runtime validation. |
 | `set`    | `<T extends JsonValue>(key: string, value: T) => Promise<SystemResult<void>>` | Durable when the promise resolves `ok` (Tauri: awaited `save()`; IndexedDB: transaction-durable). Non-`JsonValue` values are compile errors. |
-| `delete` | `(key: string) => Promise<SystemResult<void>>` | Returns `void`, not "existed" — cross-provider parity (idb-keyval cannot report existence cheaply). |
+| `delete` | `(key: string) => Promise<SystemResult<void>>` | Returns `void`, not "existed" — cross-provider parity (idb-keyval cannot report existence cheaply, D-003). `ok` when removed or already absent. |
 | `keys`   | `() => Promise<SystemResult<string[]>>` | All keys in the namespace. |
 | `clear`  | `() => Promise<SystemResult<void>>` | Removes all keys in the namespace. |
 
@@ -52,6 +66,19 @@ Values are constrained to `JsonValue` (`string \| number \| boolean \| null \| J
 at compile time — Tauri's JSON store file and IndexedDB's structured clone round-trip types like
 `Date`/`Map` differently, so restricting to JSON-safe values keeps identical call sites behaving
 identically on both providers.
+
+### SystemResult semantics
+
+| Situation | Result |
+|-----------|--------|
+| Provider resolution failed (`@tauri-apps/plugin-store` import rejected, store file failed to load, IndexedDB write-probe threw) | `err(kind, "unavailable", message)` — every call returns it |
+| API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
+| App stopped while the provider was still resolving | `err(kind, "unavailable", "stopped during resolution")` |
+| Method-time throw from either provider (incl. Tauri ACL "not allowed" throws — ambiguous, D-004) | `err(kind, "error", message)` |
+
+`store` never produces `"denied"` (there is no permission surface) or `"unsupported"` (both
+providers exist for both kinds). Every caught error is also logged via `ctx.log.error` with a
+`store:{web|tauri}-{method}-failed` key.
 
 ## Configuration
 
@@ -62,15 +89,8 @@ type StoreConfig = {
 };
 ```
 
-```ts
-const system = createApp({
-  plugins: [storePlugin],
-  pluginConfigs: { store: { name: "my-app" } }
-});
-```
-
-`name` maps to the Tauri store filename (`${name}.json`) and the IndexedDB database name. An empty
-string throws at `onInit`:
+`name` maps to the Tauri store filename (`${name}.json`) and the IndexedDB database name (with a
+fixed `"kv"` object store). An empty/whitespace string throws at `onInit`:
 
 ```
 [system] store.name must be a non-empty string.
@@ -81,7 +101,24 @@ string throws at `onInit`:
 
 None — `store` is pure request/response (`get`/`set`/`delete`/`keys`/`clear` via `app.store.*`).
 
-## Dependencies
+## Provider behavior differences
 
-None. `ctx.runtime` (provider selection) and `ctx.log` (error reporting) are core-plugin APIs,
-always injected — never declared as a `depends` edge.
+| Aspect | Tauri | Web |
+|--------|-------|-----|
+| Backing storage | `${name}.json` store file (`@tauri-apps/plugin-store`) | IndexedDB database `name`, object store `"kv"` (`idb-keyval`) |
+| Durability | `save()` awaited after every mutation (`autoSave: false`) | IndexedDB transaction commit |
+| Startup probe | none (store file load itself is the probe) | write-probe `set`+`del` of `__moku_probe__`; failure → `"unavailable"` |
+| `dispose()` | no-op | no-op |
+
+## Integration notes
+
+- **Dependencies:** none declared. `ctx.runtime` (provider selection) and `ctx.log` (error
+  reporting) are core-plugin APIs, always injected — never a `depends` edge.
+- **Packages:** `idb-keyval` is a regular dependency (dynamically imported only on the web path);
+  `@tauri-apps/plugin-store` is an *optional* peerDependency, reached only via a lazy dynamic
+  import inside the Tauri provider factory — pure-web bundles never include it.
+- **Data does not migrate between providers:** the store file and the IndexedDB database are
+  separate physical stores. An app run first on web and then packaged as native starts empty.
+- **Testing:** force the web path with `pluginConfigs: { runtime: { forceKind: "web" } }` (+
+  `fake-indexeddb`); forcing `forceKind: "tauri"` requires `vi.mock("@tauri-apps/plugin-store")`
+  (force-testing rule — see the runtime README).

@@ -5,39 +5,73 @@
 
 The only **push-driven** capability in `@moku-labs/system`, and therefore the only plugin that
 declares `events`. Every other capability (`store`, `notify`, `clipboard`, `tray`) is pure
-request/response, consumed via `require()`; `deepLink` additionally delivers runtime OS events
-through a typed `deepLink:open` event (per-plugin, `depends`-gated visibility — see Events below)
-and a local `onOpen()` subscription.
+request/response; `deepLink` additionally delivers runtime OS events through a typed
+`deepLink:open` event (per-plugin, `depends`-gated visibility — see Events below) and a local
+`onOpen()` subscription.
 
 At runtime it selects a provider once, based on `ctx.runtime.kind`:
 
 - **Tauri provider** (`providers/tauri.ts`) — registers the OS `onOpenUrl` listener (lazily
-  imported `@tauri-apps/plugin-deep-link`) as part of provider resolution. `getCurrent()` wraps the
-  plugin's `getCurrent()` (first URL, or `null`).
+  imported `@tauri-apps/plugin-deep-link`) as part of provider resolution; `dispose()` unregisters
+  it at `app.stop()`. `getCurrent()` wraps the plugin's `getCurrent()` (first URL, or `null`).
 - **Web provider** (`providers/web.ts`) — captures the page's launch URL (`location.href`) at
   construction time; no push deliveries occur on the web in v1 (PWA `protocol_handlers`/
   `launchQueue` require installed-PWA manifest configuration outside this framework's runtime
-  scope).
+  scope). `getCurrent()` resolves `ok(null)` under SSR where `location` is absent.
 
 Both providers satisfy the same structural `DeepLinkProvider` interface (`providers/types.ts`).
 
-## API
+## Usage
+
+The plugin instance lives at the subpath export (D-011c):
 
 ```ts
-const system = createApp({ plugins: [deepLinkPlugin] });
+import { createApp } from "@moku-labs/system";
+import { deepLinkPlugin } from "@moku-labs/system/deep-link";
+
+const system = createApp({
+  plugins: [deepLinkPlugin],
+  pluginConfigs: { deepLink: { schemes: ["myapp"] } }
+});
 await system.start();
 
+// 1. Cold start — the URL the app was launched with.
 const launch = await system.deepLink.getCurrent();
-if (launch.ok && launch.value) route(launch.value);
+if (launch.ok && launch.value !== null) route(launch.value);
 
+// 2. Warm delivery — URLs arriving while the app is running.
 const unsub = system.deepLink.onOpen(({ url }) => route(url));
 // later: unsub();
 ```
 
+Types come from the root (`DeepLink` namespace, `SystemResult`) or the subpath
+(`import type { DeepLink } from "@moku-labs/system/deep-link"`).
+
+## API
+
 | Method | Signature | Notes |
 |--------|-----------|-------|
-| `getCurrent` | `() => Promise<SystemResult<string \| null>>` | The URL the app was launched with, scheme-filtered. `ok(null)` when none, or when the launch URL's scheme is not in the allowlist. |
+| `getCurrent` | `() => Promise<SystemResult<string \| null>>` | The URL the app was launched with, scheme-filtered. `ok(null)` when none, or when the launch URL's scheme is not in the allowlist (filtered URLs are logged at `debug`). |
 | `onOpen` | `(cb: (payload: { url: string }) => void) => Unsubscribe` | Subscribe to runtime deliveries. Synchronous and always succeeds (subscription is local); whether deliveries ever *arrive* is provider/platform-dependent — no push deliveries occur on the web in v1. Returns an unsubscribe function. |
+
+```ts
+type Unsubscribe = () => void;
+```
+
+### SystemResult semantics (`getCurrent`)
+
+| Situation | Result |
+|-----------|--------|
+| No launch URL (or web SSR — `location` absent) | `ok(null)` |
+| Launch URL's scheme not in the non-empty allowlist | `ok(null)` (filtered, logged at `debug`) |
+| Provider resolution failed (`@tauri-apps/plugin-deep-link` import or `onOpenUrl` registration rejected) | `err(kind, "unavailable", message)` |
+| API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
+| App stopped while the provider was still resolving | `err(kind, "unavailable", "stopped during resolution")` |
+| Tauri `getCurrent()` throw | `err("tauri", "error", message)` |
+
+`deepLink` never produces `"denied"` or `"unsupported"` — there is no permission surface, and both
+kinds have a provider (the web absence is "no push channel", expressed as silence on `onOpen`, not
+a typed error). Caught errors are also logged via `ctx.log.error`.
 
 ## The delivery pipeline
 
@@ -49,7 +83,8 @@ Every runtime OS delivery passes through a filter → dedup → emit + notify pi
 2. **Dedup** — `getCurrent()` on the upstream `@tauri-apps/plugin-deep-link` is
    **acknowledged-buggy**: it replays the last-ever URL on every `onOpenUrl()` registration (e.g.
    on remount/HMR). The plugin guards against this by comparing the incoming URL against
-   `state.lastUrl`; an identical URL is dropped silently (and logged at `debug`).
+   `state.lastUrl`; an identical URL is dropped silently (and logged at `debug`). The provider
+   itself does NOT dedupe — the plugin layer is the single guard.
 3. **Emit + notify** — the plugin emits the typed `deepLink:open` event, then calls every
    `onOpen()` subscriber. A subscriber that throws is caught and logged (`ctx.log.error`) so one
    bad island cannot break delivery to the others.
@@ -58,20 +93,14 @@ Every runtime OS delivery passes through a filter → dedup → emit + notify pi
 
 ```ts
 type DeepLinkConfig = {
-  /** Scheme allowlist (e.g. ["myapp"]). Empty = accept all delivered URLs. Validated at onInit. */
+  /** Scheme allowlist (e.g. ["myapp"]). Empty = accept all delivered URLs. Default: []. */
   schemes: string[];
 };
 ```
 
-```ts
-const system = createApp({
-  plugins: [deepLinkPlugin],
-  pluginConfigs: { deepLink: { schemes: ["myapp"] } }
-});
-```
-
-Each `schemes` entry must match `/^[a-z][a-z0-9+.-]*$/` (a lowercase URI scheme). An invalid entry
-throws at `onInit`:
+The allowlist applies to both `getCurrent()` (filtered → `ok(null)`) and runtime deliveries
+(filtered → dropped). Each `schemes` entry must match `/^[a-z][a-z0-9+.-]*$/` (a lowercase URI
+scheme). An invalid entry throws at `onInit`:
 
 ```
 [system] deepLink.schemes entries must be lowercase URI schemes (e.g. "myapp").
@@ -96,21 +125,45 @@ This event is **not** promoted to the framework-level `Events` map — opt-in pl
 advertise events for capabilities a consumer didn't compose.
 
 ```ts
+import { createApp, createPlugin } from "@moku-labs/system";
+import { deepLinkPlugin } from "@moku-labs/system/deep-link";
+
 const analyticsPlugin = createPlugin("analytics", {
   depends: [deepLinkPlugin],
   hooks: () => ({
     "deepLink:open": ({ url }) => track("deep_link_opened", { url })
   })
 });
+
+const system = createApp({ plugins: [deepLinkPlugin, analyticsPlugin] });
 ```
 
 Island/app code that only needs the URL itself should prefer `onOpen()` — the event is
 plumbing for other plugins, not the primary consumer-facing surface.
 
-## Dependencies
+## Provider behavior differences
 
-None. Core APIs: `ctx.runtime` (provider selection), `ctx.log` (error/debug reporting) — always
-injected, never declared as a `depends` edge.
+| Aspect | Tauri | Web |
+|--------|-------|-----|
+| Backing API | `@tauri-apps/plugin-deep-link` (lazy import) | `location.href` snapshot at resolution |
+| `getCurrent()` | first URL from the plugin's `getCurrent()`, or `null` | captured launch URL, or `null` under SSR |
+| Runtime deliveries (`onOpen` / `deepLink:open`) | yes — OS `onOpenUrl` listener registered at resolution | none in v1 (subscriptions succeed but never fire) |
+| `dispose()` (at `app.stop()`) | unregisters the `onOpenUrl` listener | no-op |
+
+## Integration notes
+
+- **Dependencies:** none declared. Core APIs: `ctx.runtime` (provider selection), `ctx.log`
+  (error/debug reporting) — always injected, never a `depends` edge.
+- **Packages:** `@tauri-apps/plugin-deep-link` is an *optional* peerDependency, reached only via a
+  lazy dynamic import inside the Tauri provider factory — pure-web bundles never include it.
+- **Naming (D-007):** plugin name string `deepLink` (so `pluginConfigs: { deepLink: ... }` and
+  `app.deepLink`), directory `deep-link/`, subpath `@moku-labs/system/deep-link`, event
+  `deepLink:open`.
+- **Scheme registration** (the OS knowing `myapp://` belongs to this app) is the native packager's
+  manifest contract, not this plugin's — the allowlist here only filters what gets delivered.
+- **Testing:** the Tauri path requires `vi.mock("@tauri-apps/plugin-deep-link")` with
+  `forceKind: "tauri"` (force-testing rule — see the runtime README); simulate deliveries by
+  invoking the mocked `onOpenUrl` callback.
 
 ## Platform support matrix
 

@@ -2,8 +2,23 @@
 
 > Core plugin (Micro tier) — synchronous shell/platform detection (`ctx.runtime.kind` / `ctx.runtime.platform`).
 
-**Directory exception (D-008, user-approved):** this directory also hosts the framework's shared seam
-modules — `result.ts` (public `SystemResult<T>` contract, re-exported via `src/index.ts`) and
+The single override point for the whole provider seam, mirroring `envPlugin`. Registered in
+`src/config.ts` as the third core plugin (alongside `logPlugin` + `envPlugin`), so **consumers
+never compose it** — every regular plugin's `ctx` carries `ctx.runtime` automatically. Each
+capability plugin (`store`, `notify`, `clipboard`, `tray`, `deep-link`) branches on it exactly
+once, at provider-resolution time; islands never branch on the runtime themselves.
+
+Detection is import-free and SSR-safe: `detect.ts` touches `globalThis`/`navigator` only inside
+function bodies, so importing this module under Node never throws.
+
+- `kind` — `"tauri"` when the Tauri 2 shell marker (`__TAURI_INTERNALS__`) is present on
+  `globalThis`, `"web"` otherwise.
+- `platform` — from `navigator.userAgent` heuristics, checking device markers before broader OS
+  markers (Android UA contains "Linux"; iOS UA contains "like Mac OS X"). `"unknown"` is the
+  honest fallback, including SSR where `navigator` is absent.
+
+**Directory exception (D-008, user-approved):** this directory also hosts the framework's shared
+seam modules — `result.ts` (public `SystemResult<T>` contract, re-exported via `src/index.ts`) and
 `provider.ts` (internal resolution-lifecycle helper + per-app teardown registry keyed by the frozen
 `ctx.global`, D-009). Sibling capability plugins import them via `../runtime/*`. These are pure,
 stateless helper modules — not cross-plugin state access.
@@ -11,13 +26,23 @@ stateless helper modules — not cross-plugin state access.
 ## Configuration
 
 Both fields default to `null` (auto-detect). Override via `pluginConfigs: { runtime: { ... } }`
-at the `createCoreConfig`/`createCore` level (see the force-testing rule below for `forceKind`).
+at the `createApp` level (see the force-testing rule below for `forceKind`).
 
 ```ts
 type RuntimeConfig = {
-  forceKind: RuntimeKind | null; // "tauri" | "web" | null
-  forcePlatform: RuntimePlatform | null; // "macos" | "windows" | "linux" | "ios" | "android" | "unknown" | null
+  forceKind: RuntimeKind | null; // "tauri" | "web" | null — default: null
+  forcePlatform: RuntimePlatform | null; // "macos" | "windows" | "linux" | "ios" | "android" | "unknown" | null — default: null
 };
+```
+
+```ts
+import { createApp } from "@moku-labs/system";
+import { storePlugin } from "@moku-labs/system/store";
+
+const system = createApp({
+  plugins: [storePlugin],
+  pluginConfigs: { runtime: { forceKind: "web" } } // e.g. in vitest
+});
 ```
 
 **Force-testing rule:** forcing `forcePlatform` alone is safe standalone. Forcing `forceKind: "tauri"`
@@ -26,20 +51,91 @@ so provider construction never reaches a real IPC call.
 
 ## API
 
-Injected as `ctx.runtime` on every regular plugin's context (and on the app instance itself):
+Injected as `ctx.runtime` on every regular plugin's context. Immutable data properties (primitives
+copied from state — not a leaked state reference):
 
 ```ts
-ctx.runtime.kind; // "tauri" | "web"
-ctx.runtime.platform; // "macos" | "windows" | "linux" | "ios" | "android" | "unknown"
+type RuntimeApi = {
+  readonly kind: RuntimeKind; // "tauri" | "web"
+  readonly platform: RuntimePlatform; // "macos" | "windows" | "linux" | "ios" | "android" | "unknown"
+};
 ```
 
 Detection runs exactly once, synchronously, in `createState` — `kind`/`platform` never change for
-the app's lifetime.
+the app's lifetime. The `"tauri"` + `"ios"`/`"android"` combination is what lets desktop-only
+capabilities (`tray`) return a typed `"unsupported"` instead of failing at call time.
 
-## Shared seam modules
+```ts
+import { createPlugin } from "@moku-labs/system";
 
-- **`result.ts`** — the public `SystemResult<T>` contract (`ok`, `err`, `mapThrownToResult`,
-  `unsupportedProvider`) every capability method returns. Re-exported through `src/index.ts`.
-- **`provider.ts`** — the internal resolution-lifecycle helper (`startResolution`, `stopResolution`,
-  `awaitProvider`) and its per-app teardown registry, keyed by the frozen `ctx.global` object
-  (decision D-009). NOT exported from `src/index.ts` — free to evolve.
+const probePlugin = createPlugin("probe", {
+  api: ctx => ({ isNative: () => ctx.runtime.kind === "tauri" })
+});
+```
+
+## Events
+
+None — `runtime` is pure synchronous data; nothing ever changes after `createState`.
+
+## Shared seam module: `result.ts` (public contract)
+
+The uniform outcome contract every capability method returns — degraded, denied, or absent
+capabilities are typed data, never a thrown surprise inside a webview. Programmer errors still
+throw normally. Re-exported through the root `"@moku-labs/system"` (never through a plugin barrel):
+
+```ts
+import { ok, err } from "@moku-labs/system";
+import type { SystemResult, SystemErr, SystemErrorReason, JsonValue } from "@moku-labs/system";
+```
+
+```ts
+type SystemErrorReason = "unsupported" | "denied" | "unavailable" | "error";
+type SystemOk<T> = { ok: true; value: T; provider: RuntimeKind };
+type SystemErr = { ok: false; provider: RuntimeKind; reason: SystemErrorReason; message?: string };
+type SystemResult<T> = SystemOk<T> | SystemErr;
+
+ok<T>(value: T, provider: RuntimeKind): SystemOk<T>;
+err(provider: RuntimeKind, reason: SystemErrorReason, message?: string): SystemErr;
+```
+
+`result.ts` also exports the `JsonValue` value domain (`string | number | boolean | null |
+JsonValue[] | { [key: string]: JsonValue }`) used by `store`, plus two provider-side helpers that
+are NOT part of the root export: `mapThrownToResult(provider, thrown, reason?)` folds any
+thrown/rejected shape into a `SystemErr` preserving the raw message, and
+`unsupportedProvider(provider, methods)` mechanically produces a stand-in provider whose every
+listed method resolves `err(provider, "unsupported")` — the single source for both absence cases
+(unsupported-by-kind: tray on web; unsupported-by-platform-within-kind: tray on Tauri mobile).
+
+**Error-mapping table (binding for every provider implementation):**
+
+| Signal | Maps to |
+|---|---|
+| `await import("@tauri-apps/plugin-*")` rejects; provider factory/`load()` throws; storage write-probe fails; API called before `app.start()`; app stopped mid-resolution | `"unavailable"` |
+| Method-time throw/rejection from either provider (incl. ALL Tauri ACL errors — "not allowed" is ambiguous, D-004) | `"error"` |
+| Unambiguous *returned* permission signal: web `Notification.permission !== "granted"` at `notify.show()`, `NotAllowedError` DOMException from `navigator.clipboard` | `"denied"` |
+| Capability absent for the selected provider/platform | `"unsupported"` |
+
+`mapThrownToResult` NEVER produces `"denied"` — Tauri ACL throws are ambiguous (D-004); `"denied"`
+is reserved for unambiguous returned permission signals. Raw error text is always preserved in
+`message` and logged via `ctx.log.error` (MC2) by the layer that catches it.
+
+## Shared seam module: `provider.ts` (internal resolution lifecycle)
+
+NOT exported from `src/index.ts` — internal machinery, free to evolve. Owns the capability
+resolution lifecycle so "no synchronous `onStart` throw" and teardown safety are load-bearing
+across all five capabilities from one implementation:
+
+- **`startResolution(capability, kind, ctx, load)`** — fire-and-forget, called from each
+  capability's `onStart`. Synchronously stores an unawaited promise in `ctx.state.provider`;
+  folds every `load()` rejection into the promise as an `"unavailable"` failure (the `onStart`
+  body never throws); if the app stops mid-resolution, the late-arriving provider is disposed
+  immediately and the promise resolves to `err(kind, "unavailable", "stopped during resolution")`.
+- **`stopResolution(capability, ctx)`** — the uniform `onStop` one-liner: flips the stopped
+  sentinel and awaits the resolved provider's `dispose()`.
+- **`awaitProvider(state, kind)`** — awaited by every capability API method. A `null` slot (app
+  never started) resolves to `err(kind, "unavailable", "app not started — call app.start() first")`
+  instead of throwing.
+
+The teardown registry is a `WeakMap` keyed by the app's frozen global config object (`ctx.global`,
+decision D-009) — present in both `onStart` and `onStop`, so multiple app instances never share
+resolution state.

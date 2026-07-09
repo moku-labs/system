@@ -94,7 +94,8 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:coverage": "vitest run --project unit --project integration --coverage"
+    "test:coverage": "vitest run --project unit --project integration --coverage",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.3",
@@ -151,5 +152,6 @@
       "optional": true
     }
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "license": "MIT"
 }

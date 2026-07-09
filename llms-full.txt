@@ -1,0 +1,591 @@
+# @moku-labs/system — full reference
+
+Isomorphic system API for Moku — store, tray, notify, clipboard, and deep-link
+capabilities behind an env-style provider seam (Tauri provider when the native shell is
+detected, web fallback otherwise). Same island code runs on web and native. Built on
+@moku-labs/core 1.5.0 (micro-kernel) and @moku-labs/common 0.3.0 (logPlugin -> ctx.log,
+envPlugin -> ctx.env). Package: @moku-labs/system 0.1.0.
+
+Contents:
+  1. Entry points & exports
+  2. The SystemResult contract (src/plugins/runtime/result.ts)
+  3. Runtime core plugin (ctx.runtime)
+  4. Capability plugins: full public types
+     4.1 store  4.2 tray  4.3 notify  4.4 clipboard  4.5 deepLink
+  5. Event catalog
+  6. Config schema & defaults (pluginConfigs)
+  7. Lifecycle & provider resolution semantics
+  8. Error-handling patterns
+  9. Usage examples
+  10. Extension pattern (createPlugin)
+  11. Peer dependencies & environment
+
+====================================================================
+1. Entry points & exports
+====================================================================
+
+Root entry "@moku-labs/system" (src/index.ts) — helpers + TYPES ONLY, zero capability code:
+
+  export const createApp     // create a system app (Layer 3 entry point)
+  export const createPlugin  // define a consumer (Layer 3) plugin bound to this framework
+  export { err, ok }         // SystemResult constructors (from ./plugins/runtime/result)
+  export type * as Store     from "./plugins/store/types";
+  export type * as Tray      from "./plugins/tray/types";
+  export type * as Notify    from "./plugins/notify/types";
+  export type * as Clipboard from "./plugins/clipboard/types";
+  export type * as DeepLink  from "./plugins/deep-link/types";
+  export type { JsonPrimitive, JsonValue, RuntimeKind, RuntimePlatform,
+                SystemErr, SystemErrorReason, SystemOk, SystemResult };
+
+Subpath entries — plugin INSTANCES live here (D-011b: the root barrel leaked ~2 KB gz of
+unimported capability code — measured; import instances from subpaths so unused
+capabilities never enter your bundle):
+
+  "@moku-labs/system/store"     -> export { storePlugin };     export type * as Store;
+  "@moku-labs/system/tray"      -> export { trayPlugin };      export type * as Tray;
+  "@moku-labs/system/notify"    -> export { notifyPlugin };    export type * as Notify;
+  "@moku-labs/system/clipboard" -> export { clipboardPlugin }; export type * as Clipboard;
+  "@moku-labs/system/deep-link" -> export { deepLinkPlugin };  export type * as DeepLink;
+
+All entries ship ESM (+ CJS) with types; "sideEffects": false.
+
+====================================================================
+2. The SystemResult contract (src/plugins/runtime/result.ts)
+====================================================================
+
+The uniform outcome contract for every capability method — never a thrown surprise
+inside a webview. Programmer errors still throw normally.
+
+  /** The active shell kind a provider was selected for. */
+  export type RuntimeKind = "tauri" | "web";
+
+  /** OS platform within the kind. "unknown" is the honest fallback (incl. SSR). */
+  export type RuntimePlatform = "macos" | "windows" | "linux" | "ios" | "android" | "unknown";
+
+  /** JSON-safe primitive. */
+  export type JsonPrimitive = string | number | boolean | null;
+
+  /**
+   * Cross-provider value domain for store — JSON files and structured clone round-trip
+   * Date/Map/etc. differently, so both providers accept only JSON-safe values.
+   */
+  export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+  /** Why a capability call did not succeed. */
+  export type SystemErrorReason = "unsupported" | "denied" | "unavailable" | "error";
+
+  /** Successful outcome. */
+  export type SystemOk<T> = { ok: true; value: T; provider: RuntimeKind };
+
+  /** Failed outcome — degraded, denied, absent, or errored, as typed data. */
+  export type SystemErr = {
+    ok: false;
+    provider: RuntimeKind;
+    reason: SystemErrorReason;
+    message?: string;
+  };
+
+  export type SystemResult<T> = SystemOk<T> | SystemErr;
+
+  /** Construct a success outcome. */
+  export function ok<T>(value: T, provider: RuntimeKind): SystemOk<T>;
+
+  /** Construct a failure outcome. message is raw diagnostic text, preserved. */
+  export function err(provider: RuntimeKind, reason: SystemErrorReason, message?: string): SystemErr;
+
+Internal (not exported from the package, but part of the semantics):
+
+  - mapThrownToResult(provider, thrown, reason = "error"): folds any thrown/rejected
+    value into a SystemErr, preserving the raw message. NEVER produces "denied" —
+    Tauri ACL throws are ambiguous (D-004); "denied" is reserved for unambiguous
+    RETURNED permission signals. Provider-resolution paths pass "unavailable";
+    method paths default to "error".
+  - unsupportedProvider(provider, methods): mechanically produces a provider whose
+    every listed method resolves to err(provider, "unsupported"), plus a no-op
+    dispose(). The single source for BOTH absence cases: unsupported-by-kind (tray on
+    web) and unsupported-by-platform-within-kind (tray on Tauri iOS/Android).
+
+Reason semantics (the error-mapping table):
+
+  reason        | meaning                                            | typical sources
+  ------------- | -------------------------------------------------- | -------------------------------
+  "unsupported" | capability permanently absent in this environment  | tray on web; tray on Tauri
+                |                                                    | mobile; navigator.clipboard
+                |                                                    | absent (insecure context)
+  "denied"      | unambiguous permission refusal (returned signal,   | Notification permission not
+                | never inferred from a throw)                       | granted; clipboard NotAllowedError
+  "unavailable" | environment cannot deliver right now               | provider failed to resolve;
+                |                                                    | app not started; stopped during
+                |                                                    | resolution; Safari private-mode
+                |                                                    | IndexedDB write-probe failure
+  "error"       | provider threw during the operation                | any unexpected native/web throw;
+                |                                                    | raw message preserved in .message
+
+====================================================================
+3. Runtime core plugin (ctx.runtime)
+====================================================================
+
+Auto-registered in src/config.ts as the third core plugin alongside logPlugin +
+envPlugin — every plugin's ctx carries ctx.log, ctx.env, and ctx.runtime. Detection is
+synchronous, import-free, and happens once per app lifetime (createState).
+
+src/plugins/runtime/types.ts:
+
+  /** Runtime detection overrides — both null by default (auto-detect). */
+  export type RuntimeConfig = {
+    /** Force the detected shell kind. Default: null (auto-detect). */
+    forceKind: RuntimeKind | null;
+    /** Force the detected OS platform. Default: null (auto-detect). */
+    forcePlatform: RuntimePlatform | null;
+  };
+
+  /** Internal runtime state — detection result, computed once in createState. */
+  export type RuntimeState = {
+    /** Detected (or forced) shell kind. Never changes for the app's lifetime. */
+    kind: RuntimeKind;
+    /** Detected (or forced) OS platform. */
+    platform: RuntimePlatform;
+  };
+
+  /** The API injected on every regular plugin's context as ctx.runtime. */
+  export type RuntimeApi = {
+    readonly kind: RuntimeKind;
+    readonly platform: RuntimePlatform;
+  };
+
+Detection rules (src/plugins/runtime/detect.ts):
+  - kind: "tauri" when the Tauri 2 marker __TAURI_INTERNALS__ is present on globalThis,
+    "web" otherwise.
+  - platform: navigator UA heuristics -> "macos" | "windows" | "linux" | "ios" |
+    "android"; "unknown" when undetectable (including SSR, where navigator is absent).
+  - Browser globals are touched only inside function bodies — SSR-safe to import.
+
+====================================================================
+4. Capability plugins — full public types
+====================================================================
+
+All five capability plugins share the same anatomy (Complex tier): index.ts defines the
+plugin via createPlugin(name, { config?, createState, api, onInit?, onStart, onStop });
+onStart kicks off fire-and-forget provider resolution; every API method awaits the
+resolution slot and returns SystemResult. Provider interface types are STRUCTURAL and
+local — @tauri-apps/* types are never re-exported (.d.mts leakage guard).
+
+--------------------------------------------------------------------
+4.1 store — plugin name "store", subpath "@moku-labs/system/store"
+--------------------------------------------------------------------
+Key-value persistence, the template capability. Tauri provider persists to a store file
+with an awaited save() after every mutation (durable when ok); web provider persists to
+IndexedDB via idb-keyval with a one-time write-probe at resolution (Safari private
+browsing -> deterministic "unavailable" instead of a random runtime throw).
+
+src/plugins/store/types.ts:
+
+  /** Store namespace config — maps to the Tauri store filename and IndexedDB database name. */
+  export type StoreConfig = {
+    /** Namespace for persisted data. Validated non-empty at onInit. Default: "moku-system". */
+    name: string;
+  };
+
+  /** Internal store state — the resolution slot. */
+  export type StoreState = ResolutionState<StoreProvider>;
+
+  /**
+   * Key-value persistence API. Every method returns SystemResult — environmental
+   * failures are typed data, never throws.
+   */
+  export type StoreApi = {
+    /** Read a value. ok(undefined) when the key is absent. */
+    get: <T extends JsonValue = JsonValue>(key: string) => Promise<SystemResult<T | undefined>>;
+    /** Write a value. Durable when the promise resolves ok (Tauri: awaited save()). */
+    set: <T extends JsonValue>(key: string, value: T) => Promise<SystemResult<void>>;
+    /** Remove a key. void (not "existed") for cross-provider parity (D-003). */
+    delete: (key: string) => Promise<SystemResult<void>>;
+    /** List all keys in the namespace. */
+    keys: () => Promise<SystemResult<string[]>>;
+    /** Remove all keys in the namespace. */
+    clear: () => Promise<SystemResult<void>>;
+  };
+
+onInit: throws TypeError "[system] store.name must be a non-empty string." when
+config.name.trim() === "".
+
+--------------------------------------------------------------------
+4.2 tray — plugin name "tray", subpath "@moku-labs/system/tray"
+--------------------------------------------------------------------
+Desktop system tray. The web provider is all-"unsupported" (no browser tray API) and the
+Tauri provider is platform-gated (iOS/Android report kind "tauri" but have no tray) —
+both absence branches come from the same unsupportedProvider() factory. On Tauri
+desktop the OS icon is created lazily on the first mutating call; dispose() destroys it
+at app.stop().
+
+src/plugins/tray/types.ts:
+
+  /** Tray identity config. */
+  export type TrayConfig = {
+    /** OS-level tray identity. Validated non-empty at onInit. Default: "moku-system". */
+    id: string;
+  };
+
+  /** Isomorphic tray menu item. action runs in the webview on click (Tauri desktop only). */
+  export type TrayMenuItem = {
+    /** Stable item identity. */
+    id: string;
+    /** Visible label. */
+    text: string;
+    /** Enabled state; defaults to true. */
+    enabled?: boolean;
+    /** Click handler (Tauri desktop only). */
+    action?: () => void;
+  };
+
+  /** Internal tray state — the resolution slot. */
+  export type TrayState = ResolutionState<TrayProvider>;
+
+  /** Desktop tray API. Web and Tauri-mobile return err("unsupported") from every method. */
+  export type TrayApi = {
+    /** Replace the tray menu. First mutating call creates the OS icon lazily. */
+    setMenu: (items: TrayMenuItem[]) => Promise<SystemResult<void>>;
+    /** Set hover tooltip text. */
+    setTooltip: (text: string) => Promise<SystemResult<void>>;
+    /** Set the tray icon by path (path resolution is the native packager's contract). */
+    setIcon: (iconPath: string) => Promise<SystemResult<void>>;
+    /** Remove the tray icon; next mutating call recreates it. ok even if never created. */
+    destroy: () => Promise<SystemResult<void>>;
+  };
+
+onInit: throws TypeError "[system] tray.id must be a non-empty string." when
+config.id.trim() === "".
+
+--------------------------------------------------------------------
+4.3 notify — plugin name "notify", subpath "@moku-labs/system/notify"
+--------------------------------------------------------------------
+OS/browser notifications — the v1 core trio only (Tauri mobile scheduling/channel
+methods are out of scope). Permission flow is explicit by contract: show() NEVER
+auto-prompts — err("denied") when permission is not granted; the app must call
+requestPermission() deliberately. NO config (excluded from pluginConfigs).
+
+src/plugins/notify/types.ts:
+
+  /** Notification content. */
+  export type NotifyOptions = {
+    /** Notification title. */
+    title: string;
+    /** Optional body text. */
+    body?: string;
+  };
+
+  /** Internal notify state — the resolution slot. */
+  export type NotifyState = ResolutionState<NotifyProvider>;
+
+  /** Notification API — explicit permission flow; show() never auto-prompts. */
+  export type NotifyApi = {
+    /** Whether notification permission is currently granted. */
+    isPermissionGranted: () => Promise<SystemResult<boolean>>;
+    /** Prompt the user for notification permission. */
+    requestPermission: () => Promise<SystemResult<boolean>>;
+    /** Show a notification. Never auto-prompts — err("denied") when permission is not granted. */
+    show: (options: NotifyOptions) => Promise<SystemResult<void>>;
+  };
+
+--------------------------------------------------------------------
+4.4 clipboard — plugin name "clipboard", subpath "@moku-labs/system/clipboard"
+--------------------------------------------------------------------
+Text-only clipboard (image/HTML out of scope — not isomorphic even within Tauri). The
+web provider feature-probes navigator.clipboard (absent in insecure contexts ->
+"unsupported") and maps NotAllowedError -> "denied"; deliberately does NOT rely on
+permissions.query. NO config (excluded from pluginConfigs).
+
+src/plugins/clipboard/types.ts:
+
+  /** Internal clipboard state — the resolution slot. */
+  export type ClipboardState = ResolutionState<ClipboardProvider>;
+
+  /**
+   * Clipboard text API. NotAllowedError maps to err("denied"); support is
+   * feature-probed (no permissions.query).
+   */
+  export type ClipboardApi = {
+    /** Read clipboard text. */
+    readText: () => Promise<SystemResult<string>>;
+    /** Write clipboard text. */
+    writeText: (text: string) => Promise<SystemResult<void>>;
+  };
+
+--------------------------------------------------------------------
+4.5 deepLink — plugin name "deepLink", subpath "@moku-labs/system/deep-link"
+--------------------------------------------------------------------
+Deep-link URL delivery — the only push-driven capability, and the only plugin that
+declares events. Dedups by last-delivered URL in state (upstream getCurrent() replays
+the last-ever URL on every onOpenUrl() registration, e.g. remount/HMR). Naming: plugin
+name string "deepLink", directory deep-link/, event "deepLink:open".
+
+src/plugins/deep-link/types.ts:
+
+  /** Deep-link scheme allowlist. */
+  export type DeepLinkConfig = {
+    /** Allowed URI schemes; empty = accept all. Validated at onInit (lowercase scheme pattern). */
+    schemes: string[];
+  };
+
+  /** Typed per-plugin events (visible to this plugin + future depends-declared plugins). */
+  export type DeepLinkEvents = {
+    /** A deep-link URL was delivered to the running app (post-dedup, post-filter). */
+    "deepLink:open": { url: string };
+  };
+
+  /** Unsubscribe function returned by onOpen. */
+  export type Unsubscribe = () => void;
+
+  /** Internal deep-link state — resolution slot + dedup guard + island subscribers. */
+  export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
+    /** Last delivered URL — dedup guard against the upstream getCurrent() replay bug. */
+    lastUrl: string | null;
+    /** onOpen() callbacks, notified after dedup + scheme filtering. */
+    subscribers: Set<(payload: { url: string }) => void>;
+  };
+
+  /** Deep-link API — launch URL + runtime delivery subscription. */
+  export type DeepLinkApi = {
+    /** The URL the app was launched with, scheme-filtered; ok(null) when none. */
+    getCurrent: () => Promise<SystemResult<string | null>>;
+    /**
+     * Subscribe to runtime deliveries. Local + synchronous (always succeeds); on web
+     * no push deliveries occur in v1.
+     */
+    onOpen: (cb: (payload: { url: string }) => void) => Unsubscribe;
+  };
+
+onInit: each entry of config.schemes must match /^[a-z][a-z0-9+.-]*$/ — otherwise
+TypeError '[system] deepLink.schemes entries must be lowercase URI schemes (e.g. "myapp").'
+
+Cross-repo note: on Windows/Linux the OS delivers deep-link URLs as CLI args to a NEW
+process instance; single-instance forwarding is wired by the native packager repo.
+Until then, runtime deliveries on Windows/Linux may not arrive.
+
+====================================================================
+5. Event catalog
+====================================================================
+
+Framework-level Events: Record<string, never> — intentionally empty in v1. Capability
+events are per-plugin and depends-gated, never promoted to the framework contract.
+
+  event           | payload            | emitted by | when
+  --------------- | ------------------ | ---------- | -----------------------------------
+  "deepLink:open" | { url: string }    | deepLink   | a deep-link URL is delivered to the
+                  |                    |            | running app (post-dedup, post-scheme-
+                  |                    |            | filter)
+
+Islands/apps consume deliveries via app.deepLink.onOpen(cb). Plugins that declare
+depends: [deepLinkPlugin] additionally see the typed "deepLink:open" event in hooks
+(v1 ships no such edge — the event is island/app-facing plumbing).
+
+The other four capabilities are pure request/response and declare no events.
+
+====================================================================
+6. Config schema & defaults (pluginConfigs)
+====================================================================
+
+Framework Config is Record<string, never> (empty in v1) — capabilities configure via
+pluginConfigs, keyed by plugin name string:
+
+  pluginConfigs: {
+    runtime?:  { forceKind: "tauri" | "web" | null;        // default null (auto-detect)
+                 forcePlatform: RuntimePlatform | null },   // default null (auto-detect)
+    store?:    { name: string },                            // default "moku-system"; non-empty
+    tray?:     { id: string },                              // default "moku-system"; non-empty
+    deepLink?: { schemes: string[] }                        // default [] (= accept all);
+                                                            // lowercase scheme pattern
+  }
+
+notify and clipboard take NO config — they have no pluginConfigs entry.
+
+====================================================================
+7. Lifecycle & provider resolution semantics
+====================================================================
+
+  const app = createApp({ plugins: [...], pluginConfigs: {...} });
+    - onInit validation runs; bad config throws TypeError synchronously (fail-fast).
+  await app.start();
+    - each capability's onStart kicks off FIRE-AND-FORGET provider resolution
+      (startResolution): an unawaited promise is stored in the plugin's state slot.
+    - selection happens inside the loader: ctx.runtime.kind === "tauri" -> dynamic
+      import of the @tauri-apps/* plugin; "web" -> web implementation;
+      unsupported combinations -> unsupportedProvider() stand-in.
+    - load() rejections are folded into the promise as reason "unavailable" — start()
+      never throws for environmental reasons.
+  await app.<capability>.<method>(...)
+    - awaits the resolution slot (awaitProvider), then delegates to the provider.
+    - before start(): resolves to { ok: false, reason: "unavailable",
+      message: "app not started — call app.start() first" }.
+  await app.stop();
+    - stopResolution flips a stopped sentinel and awaits the resolved provider's
+      dispose() (tray destroys the OS icon; deepLink unregisters the OS listener).
+    - a provider that finishes resolving AFTER stop is disposed immediately and the
+      slot resolves to "unavailable" ("stopped during resolution").
+    - teardown registries are per-app-instance (keyed by the app's frozen global
+      config object) — multiple app instances never share resolution state.
+
+====================================================================
+8. Error-handling patterns
+====================================================================
+
+Discriminant narrowing — the canonical consumer pattern:
+
+  const r = await system.store.get<number>("count");
+  if (r.ok) {
+    // r: SystemOk<number | undefined> — r.value, r.provider
+    use(r.value ?? 0);
+  } else {
+    // r: SystemErr — r.reason, r.provider, r.message?
+    switch (r.reason) {
+      case "unsupported": hideFeature(); break;          // permanent — don't retry
+      case "denied":      explainPermission(); break;    // user/platform said no
+      case "unavailable": scheduleRetry(); break;        // transient/environmental
+      case "error":       report(r.message); break;      // provider threw; raw message
+    }
+  }
+
+Permission flow (notify) — show() never auto-prompts:
+
+  const granted = await system.notify.isPermissionGranted();
+  if (granted.ok && !granted.value) {
+    const asked = await system.notify.requestPermission();  // deliberate user gesture
+    if (!asked.ok || !asked.value) return;                  // denied — stop here
+  }
+  const shown = await system.notify.show({ title: "Done" });
+  if (!shown.ok && shown.reason === "denied") {
+    // permission revoked between check and show — still just data
+  }
+
+Feature-gating by capability, not by runtime — never branch on ctx.runtime in islands;
+probe the result instead:
+
+  const probe = await system.tray.setTooltip("ready");
+  const hasTray = probe.ok || probe.reason !== "unsupported";
+
+Programmer errors still throw:
+
+  createApp({ plugins: [storePlugin], pluginConfigs: { store: { name: "" } } });
+  // -> TypeError: [system] store.name must be a non-empty string.
+
+====================================================================
+9. Usage examples
+====================================================================
+
+Multi-capability app (web + native, one codebase):
+
+  import { createApp } from "@moku-labs/system";
+  import { clipboardPlugin } from "@moku-labs/system/clipboard";
+  import { deepLinkPlugin } from "@moku-labs/system/deep-link";
+  import { notifyPlugin } from "@moku-labs/system/notify";
+  import { storePlugin } from "@moku-labs/system/store";
+  import { trayPlugin } from "@moku-labs/system/tray";
+
+  const system = createApp({
+    plugins: [storePlugin, trayPlugin, notifyPlugin, clipboardPlugin, deepLinkPlugin],
+    pluginConfigs: {
+      store: { name: "my-app" },
+      tray: { id: "my-app-tray" },
+      deepLink: { schemes: ["myapp"] }
+      // notify + clipboard: no config
+    }
+  });
+
+  await system.start();
+
+  // persistence — identical call sites on both providers (JsonValue-constrained)
+  await system.store.set("session", { user: "alex", visits: 3 });
+  const session = await system.store.get<{ user: string; visits: number }>("session");
+
+  // tray — ok on Tauri desktop, typed "unsupported" on web / Tauri mobile
+  await system.tray.setMenu([
+    { id: "open", text: "Open", action: () => focusWindow() },
+    { id: "quit", text: "Quit", action: () => system.tray.destroy() }
+  ]);
+
+  // clipboard
+  const copied = await system.clipboard.writeText("hello");
+  if (!copied.ok && copied.reason === "denied") toast("Clipboard blocked");
+
+  // deep links — launch URL once, then live deliveries
+  const launch = await system.deepLink.getCurrent();
+  if (launch.ok && launch.value !== null) route(launch.value);
+  const unsubscribe = system.deepLink.onOpen(({ url }) => route(url));
+
+  // teardown (disposes providers, removes the tray icon, unhooks OS listeners)
+  unsubscribe();
+  await system.stop();
+
+Deterministic tests — force the seam:
+
+  import { createApp } from "@moku-labs/system";
+  import { storePlugin } from "@moku-labs/system/store";
+
+  const app = createApp({
+    plugins: [storePlugin],
+    pluginConfigs: {
+      store: { name: "test-db" },
+      runtime: { forceKind: "web", forcePlatform: "macos" }
+    }
+  });
+  await app.start();
+  const r = await app.store.set("k", 1);
+  // r === { ok: true, value: undefined, provider: "web" }
+
+Constructing results (ok / err helpers, e.g. in test doubles):
+
+  import { err, ok, type SystemResult } from "@moku-labs/system";
+  const success: SystemResult<number> = ok(42, "web");
+  const failure: SystemResult<number> = err("tauri", "unavailable", "plugin not registered");
+
+====================================================================
+10. Extension pattern (createPlugin)
+====================================================================
+
+createPlugin defines a consumer (Layer 3) plugin bound to this framework's types. Its
+ctx carries the three core-plugin injections — ctx.log (structured logging, MC2),
+ctx.env (validated environment access, MC3), and ctx.runtime (the seam):
+
+  import { createApp, createPlugin } from "@moku-labs/system";
+
+  const telemetryPlugin = createPlugin("telemetry", {
+    config: { endpoint: "https://example.test/ingest" },
+    api: ctx => ({
+      report: (event: string) => {
+        // never console.* / process.env — family conventions MC2/MC3
+        ctx.log.info("telemetry event", { event, shell: ctx.runtime.kind });
+      }
+    })
+  });
+
+  const app = createApp({ plugins: [telemetryPlugin] });
+  app.telemetry.report("boot");
+
+Rules for extensions:
+  - Types infer from the spec object — no explicit generics.
+  - Use ctx.runtime for shell/platform decisions inside plugins; keep islands
+    runtime-agnostic (probe SystemResult instead).
+  - If your plugin wraps a native API, follow the capability anatomy: structural local
+    provider types, SystemResult on every method, fire-and-forget resolution in
+    onStart, dispose() in onStop.
+
+====================================================================
+11. Peer dependencies & environment
+====================================================================
+
+Dependencies (bundled): @moku-labs/core 1.5.0, @moku-labs/common 0.3.0, idb-keyval 6.3.0.
+
+Optional peer dependencies — ONLY needed in the native (Tauri) shell; dynamically
+imported inside Tauri providers; pure-web consumers skip them entirely:
+
+  @tauri-apps/api                        ^2.11.0
+  @tauri-apps/plugin-store               ^2.4.0    (store)
+  @tauri-apps/plugin-notification        ^2.3.0    (notify)
+  @tauri-apps/plugin-clipboard-manager   ^2.3.0    (clipboard)
+  @tauri-apps/plugin-deep-link           ^2.4.0    (deepLink)
+
+Environment: Node >= 24, Bun >= 1.3.14 (bun exclusively — never npm/yarn/pnpm).
+TypeScript strict mode with exactOptionalPropertyTypes and noUncheckedIndexedAccess.
+Tests: vitest, unit + integration projects, 90% coverage threshold; plugin tests are
+colocated in src/plugins/<name>/__tests__/{unit,integration}/; root tests/ is for
+framework-level integration only.

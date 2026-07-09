@@ -1,0 +1,208 @@
+# @moku-labs/system
+
+> Isomorphic system API for Moku apps — store, tray, notify, clipboard, and deep-link
+> capabilities behind an env-style provider seam. A Tauri provider is selected when the
+> native shell is detected; a web provider is the fallback. The same island code runs
+> unchanged on web and native. Built on @moku-labs/core (micro-kernel) and
+> @moku-labs/common (logPlugin -> ctx.log, envPlugin -> ctx.env).
+
+Package: @moku-labs/system 0.1.0 (ESM + CJS, types included, sideEffects: false)
+Repo: https://github.com/moku-labs/system
+Full reference: llms-full.txt
+
+## Core concepts
+
+### 1. The provider seam (ctx.runtime)
+
+- A core plugin named `runtime` is auto-registered (alongside logPlugin + envPlugin).
+  It detects the shell ONCE at createApp:
+  - kind: "tauri" when the Tauri 2 marker (__TAURI_INTERNALS__) is on globalThis, else "web"
+  - platform: "macos" | "windows" | "linux" | "ios" | "android" | "unknown" (UA heuristics;
+    "unknown" is the honest fallback, including SSR)
+- The result is injected as `ctx.runtime` ({ kind, platform }) on every plugin context.
+- Each capability plugin resolves its provider from that detection at app.start(),
+  fire-and-forget: resolution failures fold into the NEXT method call's result, never
+  into a startup throw.
+- Overridable for tests via pluginConfigs: { runtime: { forceKind, forcePlatform } }.
+- Island/consumer code must NEVER branch on the runtime itself — the plugin does.
+
+### 2. The SystemResult contract (typed outcomes, never throws)
+
+Every capability method returns SystemResult<T>:
+
+    type SystemOk<T>  = { ok: true; value: T; provider: "tauri" | "web" };
+    type SystemErr    = { ok: false; provider: "tauri" | "web";
+                          reason: "unsupported" | "denied" | "unavailable" | "error";
+                          message?: string };
+    type SystemResult<T> = SystemOk<T> | SystemErr;
+
+Reason semantics:
+- unsupported  — capability permanently absent here (tray on web; tray on Tauri
+                 iOS/Android; clipboard in insecure contexts). Hide the feature.
+- denied       — unambiguous permission refusal (notify permission not granted;
+                 clipboard NotAllowedError). Thrown errors are NEVER mapped to denied.
+- unavailable  — environment cannot deliver right now (provider failed to resolve,
+                 app not started, Safari private-mode storage probe failed).
+- error        — provider threw during the operation; raw message preserved.
+
+Environmental failure is data. Programmer errors (e.g. empty store.name) still throw
+normally — fail-fast TypeError at createApp (onInit).
+
+### 3. Subpath exports (zero-leak bundles)
+
+Plugin INSTANCES are imported from subpaths, never the root:
+
+    import { createApp, createPlugin, ok, err } from "@moku-labs/system"; // + types only
+    import { storePlugin }     from "@moku-labs/system/store";
+    import { trayPlugin }      from "@moku-labs/system/tray";
+    import { notifyPlugin }    from "@moku-labs/system/notify";
+    import { clipboardPlugin } from "@moku-labs/system/clipboard";
+    import { deepLinkPlugin }  from "@moku-labs/system/deep-link";
+
+Why: a root barrel re-exporting instances leaked ~2 KB gz of unimported capability code
+into every consumer (measured). With subpaths, a store-only app carries zero bytes of
+tray/notify/clipboard/deep-link. Root also re-exports type namespaces: Store, Tray,
+Notify, Clipboard, DeepLink, plus SystemResult / SystemOk / SystemErr /
+SystemErrorReason / RuntimeKind / RuntimePlatform / JsonValue / JsonPrimitive.
+
+### 4. Optional Tauri peers
+
+@tauri-apps/api, @tauri-apps/plugin-store, @tauri-apps/plugin-notification,
+@tauri-apps/plugin-clipboard-manager, @tauri-apps/plugin-deep-link are OPTIONAL peer
+dependencies — dynamically imported only inside Tauri providers when the native shell
+is detected. Pure-web consumers do not install them.
+
+## Quick reference
+
+### Create and start an app
+
+    import { createApp } from "@moku-labs/system";
+    import { storePlugin } from "@moku-labs/system/store";
+
+    const system = createApp({
+      plugins: [storePlugin],
+      pluginConfigs: { store: { name: "my-app" } }
+    });
+    await system.start();          // provider resolution kicks off here
+    // ... use system.<capability>.<method>()
+    await system.stop();           // disposes providers
+
+Calling a method before start() resolves to
+{ ok: false, reason: "unavailable", message: "app not started — call app.start() first" }.
+
+### Per-capability one-liners
+
+    // store — JSON-safe key-value persistence
+    const r = await system.store.get<number>("count");    // SystemResult<number | undefined>
+    await system.store.set("count", 1);                   // durable when ok
+    await system.store.delete("count");
+    await system.store.keys();                            // SystemResult<string[]>
+    await system.store.clear();
+
+    // tray — desktop only; web + Tauri mobile answer err("unsupported")
+    await system.tray.setMenu([{ id: "quit", text: "Quit", action: () => {} }]);
+    await system.tray.setTooltip("My app");
+    await system.tray.setIcon("icons/tray.png");
+    await system.tray.destroy();
+
+    // notify — explicit permission flow; show() never auto-prompts
+    const granted = await system.notify.isPermissionGranted();  // SystemResult<boolean>
+    await system.notify.requestPermission();                    // SystemResult<boolean>
+    await system.notify.show({ title: "Done", body: "..." });   // err("denied") if not granted
+
+    // clipboard — text only
+    const text = await system.clipboard.readText();       // SystemResult<string>
+    await system.clipboard.writeText("hello");
+
+    // deepLink — launch URL + runtime deliveries (deduped)
+    const url = await system.deepLink.getCurrent();       // SystemResult<string | null>
+    const unsub = system.deepLink.onOpen(({ url }) => route(url));  // sync, always succeeds
+    unsub();
+
+### Narrowing the result
+
+    const r = await system.store.get<number>("count");
+    if (r.ok) {
+      use(r.value ?? 0);                        // r.value: number | undefined
+    } else if (r.reason === "unsupported") {
+      hideFeature();                            // permanent absence
+    } else {
+      console.warn(r.provider, r.reason, r.message);
+    }
+
+### Forcing the runtime (tests)
+
+    createApp({
+      plugins: [storePlugin],
+      pluginConfigs: {
+        store: { name: "test-db" },
+        runtime: { forceKind: "web", forcePlatform: "macos" }
+      }
+    });
+
+### Extending (consumer plugin)
+
+    import { createApp, createPlugin } from "@moku-labs/system";
+    const myPlugin = createPlugin("my", {
+      api: ctx => ({ ping: () => ctx.runtime.kind })  // ctx.runtime, ctx.log, ctx.env available
+    });
+    const app = createApp({ plugins: [myPlugin] });
+
+## Plugin catalog
+
+One line each: purpose | tier | API | events.
+
+- runtime   — shell/platform detection injected as ctx.runtime; the single override
+              point for the seam | Core (Micro, auto-registered) |
+              ctx.runtime.kind, ctx.runtime.platform; config { forceKind, forcePlatform }
+              (both default null = auto-detect) | no events
+- store     — JSON-safe key-value persistence; Tauri store file with awaited save(),
+              web IndexedDB via idb-keyval with one-time write-probe | Complex |
+              get/set/delete/keys/clear; config { name } default "moku-system" | no events
+- tray      — desktop tray icon + menu, created lazily on first mutating call; web and
+              Tauri-mobile are all-unsupported | Complex |
+              setMenu/setTooltip/setIcon/destroy; config { id } default "moku-system" | no events
+- notify    — OS/browser notifications, explicit permission flow (show never
+              auto-prompts) | Complex | show/requestPermission/isPermissionGranted;
+              NO config | no events
+- clipboard — text clipboard; feature-probed, NotAllowedError -> "denied" | Complex |
+              readText/writeText; NO config | no events
+- deepLink  — deep-link URL delivery, the only push-driven capability; dedups upstream
+              getCurrent() replay | Complex | getCurrent/onOpen(cb): Unsubscribe;
+              config { schemes } default [] (empty = accept all, lowercase scheme
+              pattern validated at onInit) | event "deepLink:open" { url: string }
+
+Naming: plugin name string "deepLink", directory src/plugins/deep-link/, subpath
+"@moku-labs/system/deep-link", event "deepLink:open".
+
+## File structure
+
+    src/index.ts                 root entry: createApp, createPlugin, ok, err + types only
+    src/config.ts                createCoreConfig("system", ...) — registers logPlugin,
+                                 envPlugin, runtimePlugin as core plugins
+    src/store.ts                 subpath entry @moku-labs/system/store
+    src/tray.ts                  subpath entry @moku-labs/system/tray
+    src/notify.ts                subpath entry @moku-labs/system/notify
+    src/clipboard.ts             subpath entry @moku-labs/system/clipboard
+    src/deep-link.ts             subpath entry @moku-labs/system/deep-link
+    src/plugins/runtime/         core plugin + shared seam modules:
+      result.ts                  SystemResult contract + ok/err helpers (public)
+      provider.ts                resolution lifecycle (internal, not exported)
+      detect.ts                  sync, import-free shell/platform detection
+    src/plugins/<name>/          each capability: index.ts (createPlugin spec),
+      api.ts, state.ts, types.ts, providers/{index,web,tauri,types}.ts,
+      __tests__/{unit,integration}/
+    tests/                       framework-level tests only (never plugin-specific)
+
+## Conventions
+
+- Package manager: bun exclusively. Scripts: build, test, test:unit, test:integration,
+  test:coverage (90% threshold), lint, lint:fix, format, validate.
+- Family rules (MC1-MC3): branded CLI kit for any CLI surface; ctx.log (never raw
+  console.*); ctx.env (never raw process.env).
+- Provider interface types are structural and local — @tauri-apps/* types are never
+  re-exported (d.mts leakage guard).
+- notify and clipboard take no config; they are excluded from pluginConfigs.
+- deepLink onOpen subscription is local and synchronous (always succeeds); on web no
+  push deliveries occur in v1. Windows/Linux runtime delivery requires single-instance
+  forwarding wired by the native packager repo.
