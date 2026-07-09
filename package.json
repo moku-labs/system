@@ -16,6 +16,56 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./store": {
+      "import": {
+        "types": "./dist/store.d.mts",
+        "default": "./dist/store.mjs"
+      },
+      "require": {
+        "types": "./dist/store.d.cts",
+        "default": "./dist/store.cjs"
+      }
+    },
+    "./tray": {
+      "import": {
+        "types": "./dist/tray.d.mts",
+        "default": "./dist/tray.mjs"
+      },
+      "require": {
+        "types": "./dist/tray.d.cts",
+        "default": "./dist/tray.cjs"
+      }
+    },
+    "./notify": {
+      "import": {
+        "types": "./dist/notify.d.mts",
+        "default": "./dist/notify.mjs"
+      },
+      "require": {
+        "types": "./dist/notify.d.cts",
+        "default": "./dist/notify.cjs"
+      }
+    },
+    "./clipboard": {
+      "import": {
+        "types": "./dist/clipboard.d.mts",
+        "default": "./dist/clipboard.mjs"
+      },
+      "require": {
+        "types": "./dist/clipboard.d.cts",
+        "default": "./dist/clipboard.cjs"
+      }
+    },
+    "./deep-link": {
+      "import": {
+        "types": "./dist/deep-link.d.mts",
+        "default": "./dist/deep-link.mjs"
+      },
+      "require": {
+        "types": "./dist/deep-link.d.cts",
+        "default": "./dist/deep-link.cjs"
+      }
     }
   },
   "files": [
@@ -100,5 +150,6 @@
     "@tauri-apps/plugin-store": {
       "optional": true
     }
-  }
+  },
+  "sideEffects": false
 }

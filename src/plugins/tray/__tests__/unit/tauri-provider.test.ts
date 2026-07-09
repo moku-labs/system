@@ -81,6 +81,45 @@ describe("createTauriTrayProvider", () => {
     expect(mockTrayIconNew).toHaveBeenCalledTimes(2);
   });
 
+  it("a transient icon-creation failure returns a SystemErr and the NEXT mutating call retries (and can succeed)", async () => {
+    mockTrayIconNew.mockRejectedValueOnce(new Error("transient OS failure"));
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+    const failed = await provider.setTooltip("first attempt");
+    expect(failed).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "error",
+      message: "transient OS failure"
+    });
+    expect(mockTrayIconNew).toHaveBeenCalledTimes(1);
+
+    const retried = await provider.setTooltip("second attempt");
+    expect(retried).toEqual({ ok: true, value: undefined, provider: "tauri" });
+    expect(mockTrayIconNew).toHaveBeenCalledTimes(2);
+  });
+
+  it("destroy() and dispose() both resolve cleanly after a failed icon creation (no leaked rejection)", async () => {
+    mockTrayIconNew.mockRejectedValueOnce(new Error("transient OS failure"));
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+    await provider.setTooltip("triggers the failing creation");
+
+    const destroyResult = await provider.destroy();
+    expect(destroyResult).toEqual({ ok: true, value: undefined, provider: "tauri" });
+    expect(fakeTrayIcon.close).not.toHaveBeenCalled();
+
+    await expect(provider.dispose()).resolves.toBeUndefined();
+  });
+
+  it("dispose() alone resolves cleanly after a failed icon creation", async () => {
+    mockTrayIconNew.mockRejectedValueOnce(new Error("transient OS failure"));
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+    await provider.setIcon("/icon.png");
+
+    await expect(provider.dispose()).resolves.toBeUndefined();
+    expect(fakeTrayIcon.close).not.toHaveBeenCalled();
+  });
+
   it("setMenu builds a Menu from TrayMenuItem[] and forwards it to the tray icon", async () => {
     const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
 

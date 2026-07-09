@@ -10,8 +10,13 @@ const framework = createCore(coreConfig, {
   plugins: []
 });
 
-// ─── Plugins + Types ──────────────────────────────────────────
-export * from "./plugins";
+// ─── Plugin Types (type-only — zero bundle cost) ─────────────
+// Plugin INSTANCES live at subpath exports ("@moku-labs/system/store", …) so a
+// pure-web consumer's bundle carries only the capabilities it composes (D-011b:
+// the root barrel leaked ~2 KB gz of unimported capability code — measured).
+export type * as Clipboard from "./plugins/clipboard/types";
+export type * as DeepLink from "./plugins/deep-link/types";
+export type * as Notify from "./plugins/notify/types";
 export type {
   JsonPrimitive,
   JsonValue,
@@ -24,6 +29,8 @@ export type {
 } from "./plugins/runtime/result";
 // ─── Public contract (SystemResult seam) ─────────────────────
 export { err, ok } from "./plugins/runtime/result";
+export type * as Store from "./plugins/store/types";
+export type * as Tray from "./plugins/tray/types";
 
 // ─── Framework API ───────────────────────────────────────────
 /**

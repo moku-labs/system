@@ -104,7 +104,9 @@ export async function createTauriTrayProvider(
    * mutating calls issued without an intervening await (e.g. via `Promise.all`) both
    * see the same in-flight promise instead of each independently calling
    * `TrayIcon.new()`, which would leak an OS tray-icon handle the second call
-   * overwrites and `destroy()`/`dispose()` could never reach.
+   * overwrites and `destroy()`/`dispose()` could never reach. On rejection (a
+   * transient OS failure), the cache is cleared so the NEXT mutating call retries
+   * instead of replaying the same failure forever.
    *
    * @returns {Promise<Awaited<ReturnType<typeof TrayIcon.new>>>} The tray icon handle.
    * @example
@@ -113,15 +115,24 @@ export async function createTauriTrayProvider(
    * ```
    */
   function ensureIcon(): Promise<Awaited<ReturnType<typeof TrayIcon.new>>> {
-    iconPromise ??= TrayIcon.new({ id: config.id });
+    if (iconPromise === undefined) {
+      iconPromise = TrayIcon.new({ id: config.id }).catch((error: unknown) => {
+        iconPromise = undefined;
+        throw error;
+      });
+    }
     return iconPromise;
   }
 
   /**
-   * Destroy the cached icon if present; idempotent when never created or already
-   * destroyed. Clears the cached promise so the next mutating call recreates it
-   * lazily. Awaits (and clears) any in-flight creation first so a destroy racing a
-   * concurrent first-call creation still ends up with no leaked handle.
+   * Destroy the cached icon if present; idempotent when never created, already
+   * destroyed, or the in-flight creation failed (nothing to destroy in that case —
+   * the rejection already propagated to the caller that awaited it). Clears the
+   * cached promise so the next mutating call recreates it lazily. Awaits (and
+   * clears) any in-flight creation first so a destroy racing a concurrent first-call
+   * creation still ends up with no leaked handle, and NEVER throws — so
+   * `destroy()`/`dispose()` (and the teardown registry that awaits `dispose()` at
+   * `app.stop()`) always resolve cleanly even after a prior creation failure.
    *
    * @returns {Promise<void>} Resolves once teardown completes.
    * @example
@@ -135,8 +146,12 @@ export async function createTauriTrayProvider(
     }
     const pending = iconPromise;
     iconPromise = undefined;
-    const current = await pending;
-    await current.close();
+    try {
+      const current = await pending;
+      await current.close();
+    } catch {
+      // The in-flight creation itself failed — nothing was ever created to close.
+    }
   }
 
   return {
