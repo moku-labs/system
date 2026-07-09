@@ -1,5 +1,6 @@
 /**
- * @file notify plugin — state factory skeleton.
+ * @file notify plugin — state factory. The resolution slot starts empty; onStart
+ * populates it synchronously via startResolution (spec/02 §State).
  */
 import type { NotifyState } from "./types";
 
@@ -7,17 +8,13 @@ import type { NotifyState } from "./types";
  * Creates the initial notify state: an empty resolution slot (provider: null) that
  * onStart populates via startResolution.
  *
- * @param {object} _ctx - Minimal context.
- * @param {object} _ctx.global - Frozen global config.
- * @param {object} _ctx.config - Resolved (empty) notify config.
+ * @returns {NotifyState} The initial state with no resolved provider yet.
  * @example
  * ```ts
- * const state = createNotifyState({ global: {}, config: {} });
+ * const state = createNotifyState(); // { provider: null }
  * ```
  */
-export function createNotifyState(_ctx: {
-  readonly global: Readonly<Record<string, unknown>>;
-  readonly config: Readonly<Record<string, never>>;
-}): NotifyState {
-  throw new Error("not implemented");
+export function createNotifyState(): NotifyState {
+  // eslint-disable-next-line unicorn/no-null -- ResolutionState.provider is null until onStart (seam contract)
+  return { provider: null };
 }

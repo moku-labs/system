@@ -55,6 +55,32 @@ describe("createTauriTrayProvider", () => {
     expect(mockTrayIconNew).toHaveBeenCalledTimes(1);
   });
 
+  it("concurrent mutating calls with no intervening await create the icon exactly once", async () => {
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+    const [tooltipResult, iconResult] = await Promise.all([
+      provider.setTooltip("a"),
+      provider.setIcon("b")
+    ]);
+
+    expect(mockTrayIconNew).toHaveBeenCalledTimes(1);
+    expect(tooltipResult).toEqual({ ok: true, value: undefined, provider: "tauri" });
+    expect(iconResult).toEqual({ ok: true, value: undefined, provider: "tauri" });
+  });
+
+  it("destroy() followed by a concurrent recreate still creates exactly one new icon", async () => {
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+    await provider.setMenu([{ id: "quit", text: "Quit" }]);
+    expect(mockTrayIconNew).toHaveBeenCalledTimes(1);
+
+    await provider.destroy();
+    expect(fakeTrayIcon.close).toHaveBeenCalledTimes(1);
+
+    await Promise.all([provider.setTooltip("a"), provider.setIcon("b")]);
+
+    expect(mockTrayIconNew).toHaveBeenCalledTimes(2);
+  });
+
   it("setMenu builds a Menu from TrayMenuItem[] and forwards it to the tray icon", async () => {
     const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
 

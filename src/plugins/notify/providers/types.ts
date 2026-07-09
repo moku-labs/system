@@ -11,6 +11,12 @@ export const NOTIFY_METHODS = ["isPermissionGranted", "requestPermission", "show
 /**
  * Structural notify provider contract (satisfies CapabilityProvider via dispose).
  *
+ * Method-shorthand syntax (not arrow-property syntax) is deliberate: TypeScript
+ * checks method-shorthand members bivariantly, which is what lets the shared
+ * `unsupportedProvider("web", NOTIFY_METHODS)` stand-in (typed
+ * `Record<M, (...args: never[]) => Promise<SystemErr>>`) satisfy this interface —
+ * arrow-property members are checked contravariantly and would reject it.
+ *
  * @example
  * ```ts
  * const provider: NotifyProvider = await createWebNotifyProvider(log);
@@ -18,11 +24,11 @@ export const NOTIFY_METHODS = ["isPermissionGranted", "requestPermission", "show
  */
 export type NotifyProvider = {
   /** Whether notification permission is currently granted. */
-  isPermissionGranted: () => Promise<SystemResult<boolean>>;
+  isPermissionGranted(): Promise<SystemResult<boolean>>;
   /** Prompt the user for notification permission. */
-  requestPermission: () => Promise<SystemResult<boolean>>;
+  requestPermission(): Promise<SystemResult<boolean>>;
   /** Show a notification (never auto-prompts). */
-  show: (options: NotifyOptions) => Promise<SystemResult<void>>;
+  show(options: NotifyOptions): Promise<SystemResult<void>>;
   /** Teardown (no-op for notify; required by CapabilityProvider — F3). */
-  dispose: () => Promise<void>;
+  dispose(): Promise<void>;
 };

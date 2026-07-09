@@ -4,23 +4,29 @@
  * factory time, not a method.
  */
 import type { DeepLinkContext } from "../types";
+import { createTauriDeepLinkProvider } from "./tauri";
 import type { DeepLinkProvider } from "./types";
+import { createWebDeepLinkProvider } from "./web";
 
 /**
  * Build the load closure passed to startResolution. kind "tauri" → plugin-deep-link
  * provider (registers the OS onOpenUrl listener onto onUrl); otherwise → web provider
  * (no push deliveries in v1).
  *
- * @param {DeepLinkContext} _ctx - Deep-link domain context (config + runtime + log).
- * @param {(url: string) => void} _onUrl - Delivery channel (filter → dedup → emit + notify).
+ * @param {DeepLinkContext} ctx - Deep-link domain context (config + runtime + log).
+ * @param {(url: string) => void} onUrl - Delivery channel (filter → dedup → emit + notify).
+ * @returns {() => Promise<DeepLinkProvider>} The load closure for the selected provider.
  * @example
  * ```ts
  * startResolution("deepLink", ctx.runtime.kind, ctx, loadDeepLinkProvider(ctx, createDeliver(ctx)));
  * ```
  */
 export function loadDeepLinkProvider(
-  _ctx: DeepLinkContext,
-  _onUrl: (url: string) => void
+  ctx: DeepLinkContext,
+  onUrl: (url: string) => void
 ): () => Promise<DeepLinkProvider> {
-  throw new Error("not implemented");
+  if (ctx.runtime.kind === "tauri") {
+    return () => createTauriDeepLinkProvider(ctx.config, ctx.log, onUrl);
+  }
+  return () => createWebDeepLinkProvider(ctx.config, ctx.log);
 }

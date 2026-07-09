@@ -1,5 +1,6 @@
 /**
- * @file clipboard plugin — state factory skeleton.
+ * @file clipboard plugin — state factory. The resolution slot starts empty; onStart
+ * populates it synchronously via startResolution (spec/05 §State).
  */
 import type { ClipboardState } from "./types";
 
@@ -7,17 +8,13 @@ import type { ClipboardState } from "./types";
  * Creates the initial clipboard state: an empty resolution slot (provider: null) that
  * onStart populates via startResolution.
  *
- * @param {object} _ctx - Minimal context.
- * @param {object} _ctx.global - Frozen global config.
- * @param {object} _ctx.config - Resolved (empty) clipboard config.
+ * @returns {ClipboardState} The initial state with no resolved provider yet.
  * @example
  * ```ts
- * const state = createClipboardState({ global: {}, config: {} });
+ * const state = createClipboardState(); // { provider: null }
  * ```
  */
-export function createClipboardState(_ctx: {
-  readonly global: Readonly<Record<string, unknown>>;
-  readonly config: Readonly<Record<string, never>>;
-}): ClipboardState {
-  throw new Error("not implemented");
+export function createClipboardState(): ClipboardState {
+  // eslint-disable-next-line unicorn/no-null -- ResolutionState.provider is null until onStart (seam contract)
+  return { provider: null };
 }

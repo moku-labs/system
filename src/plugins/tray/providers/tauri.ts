@@ -96,10 +96,15 @@ export async function createTauriTrayProvider(
   const { TrayIcon } = await import("@tauri-apps/api/tray");
   const { Menu } = await import("@tauri-apps/api/menu");
 
-  let icon: Awaited<ReturnType<typeof TrayIcon.new>> | undefined;
+  let iconPromise: Promise<Awaited<ReturnType<typeof TrayIcon.new>>> | undefined;
 
   /**
-   * Lazily create (or return the cached) OS tray icon handle.
+   * Lazily create (or return the in-flight/cached) OS tray icon handle. Caching the
+   * PROMISE — not just the resolved handle — closes a check-then-act race: two
+   * mutating calls issued without an intervening await (e.g. via `Promise.all`) both
+   * see the same in-flight promise instead of each independently calling
+   * `TrayIcon.new()`, which would leak an OS tray-icon handle the second call
+   * overwrites and `destroy()`/`dispose()` could never reach.
    *
    * @returns {Promise<Awaited<ReturnType<typeof TrayIcon.new>>>} The tray icon handle.
    * @example
@@ -107,16 +112,16 @@ export async function createTauriTrayProvider(
    * const trayIcon = await ensureIcon();
    * ```
    */
-  async function ensureIcon(): Promise<Awaited<ReturnType<typeof TrayIcon.new>>> {
-    if (icon === undefined) {
-      icon = await TrayIcon.new({ id: config.id });
-    }
-    return icon;
+  function ensureIcon(): Promise<Awaited<ReturnType<typeof TrayIcon.new>>> {
+    iconPromise ??= TrayIcon.new({ id: config.id });
+    return iconPromise;
   }
 
   /**
    * Destroy the cached icon if present; idempotent when never created or already
-   * destroyed. Clears the cache so the next mutating call recreates it lazily.
+   * destroyed. Clears the cached promise so the next mutating call recreates it
+   * lazily. Awaits (and clears) any in-flight creation first so a destroy racing a
+   * concurrent first-call creation still ends up with no leaked handle.
    *
    * @returns {Promise<void>} Resolves once teardown completes.
    * @example
@@ -125,11 +130,13 @@ export async function createTauriTrayProvider(
    * ```
    */
   async function destroyIcon(): Promise<void> {
-    if (icon !== undefined) {
-      const current = icon;
-      icon = undefined;
-      await current.close();
+    if (iconPromise === undefined) {
+      return;
     }
+    const pending = iconPromise;
+    iconPromise = undefined;
+    const current = await pending;
+    await current.close();
   }
 
   return {
