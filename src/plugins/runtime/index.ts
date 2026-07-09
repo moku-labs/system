@@ -6,7 +6,7 @@
  */
 import { createCorePlugin } from "@moku-labs/core";
 import { detectKind, detectPlatform } from "./detect";
-import type { RuntimeConfig } from "./types";
+import type { RuntimeApi, RuntimeConfig } from "./types";
 
 // eslint-disable-next-line unicorn/no-null -- null is the approved auto-detect sentinel (RuntimeConfig contract)
 const defaultConfig: RuntimeConfig = { forceKind: null, forcePlatform: null };
@@ -37,7 +37,7 @@ export const runtimePlugin = createCorePlugin("runtime", {
    * if (ctx.runtime.kind === "tauri") loadNativeProvider();
    * ```
    */
-  api: ctx => ({
+  api: (ctx): RuntimeApi => ({
     kind: ctx.state.kind,
     platform: ctx.state.platform
   })

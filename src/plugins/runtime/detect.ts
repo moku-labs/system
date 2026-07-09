@@ -12,9 +12,10 @@ import type { RuntimeKind, RuntimePlatform } from "./result";
  * ```ts
  * const kind = detectKind(); // "web" in a browser tab
  * ```
+ * @returns The detected shell kind.
  */
 export function detectKind(): RuntimeKind {
-  throw new Error("not implemented");
+  return "__TAURI_INTERNALS__" in globalThis ? "tauri" : "web";
 }
 
 /**
@@ -25,7 +26,29 @@ export function detectKind(): RuntimeKind {
  * ```ts
  * const platform = detectPlatform(); // "macos" on a Mac
  * ```
+ * @returns The detected OS platform.
  */
 export function detectPlatform(): RuntimePlatform {
-  throw new Error("not implemented");
+  if (typeof navigator === "undefined") {
+    return "unknown";
+  }
+  const userAgent = navigator.userAgent;
+  // Order matters: Android UA contains "Linux"; iOS UA contains "like Mac OS X" —
+  // check the more specific device markers before the broader OS markers.
+  if (/android/i.test(userAgent)) {
+    return "android";
+  }
+  if (/iphone|ipad|ipod/i.test(userAgent)) {
+    return "ios";
+  }
+  if (/win/i.test(userAgent)) {
+    return "windows";
+  }
+  if (/mac/i.test(userAgent)) {
+    return "macos";
+  }
+  if (/linux/i.test(userAgent)) {
+    return "linux";
+  }
+  return "unknown";
 }
