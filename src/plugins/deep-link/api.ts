@@ -80,6 +80,11 @@ export function createDeepLinkApi(ctx: DeepLinkContext): DeepLinkApi {
         // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — null is the documented "no launch URL / filtered" value
         return ok(null, result.provider);
       }
+      // Remember what the caller just read: if the OS replays that same URL onto the
+      // freshly registered listener, createDeliver drops it exactly once.
+      if (result.value !== null) {
+        ctx.state.launchUrl = result.value;
+      }
       return result;
     },
 
@@ -103,8 +108,11 @@ export function createDeepLinkApi(ctx: DeepLinkContext): DeepLinkApi {
 }
 
 /**
- * Creates the delivery function passed to the provider loader: scheme-filters,
- * dedups against state.lastUrl, then emits deepLink:open and notifies subscribers.
+ * Creates the delivery function passed to the provider loader: scheme-filters, drops
+ * the one-time launch-URL replay, then emits deepLink:open and notifies subscribers.
+ * Only the replay is deduped — the OS delivers the launch URL to a listener that just
+ * registered, and `getCurrent()` already handed the same URL to the app. Every later
+ * delivery is real user intent, including a repeat of a URL seen before.
  * A subscriber that throws is caught + logged so one bad island cannot break
  * delivery to the others.
  *
@@ -121,11 +129,12 @@ export function createDeliver(ctx: DeepLinkContext): (url: string) => void {
       ctx.log.debug("deepLink:delivery-scheme-filtered", { url });
       return;
     }
-    if (url === ctx.state.lastUrl) {
-      ctx.log.debug("deepLink:delivery-deduped", { url });
+    const isLaunchReplay = !ctx.state.launchReplayDone && url === ctx.state.launchUrl;
+    ctx.state.launchReplayDone = true;
+    if (isLaunchReplay) {
+      ctx.log.debug("deepLink:launch-replay-dropped", { url });
       return;
     }
-    ctx.state.lastUrl = url;
 
     ctx.emit("deepLink:open", { url });
 

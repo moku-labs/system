@@ -13,11 +13,13 @@ At runtime it selects a provider once, based on `ctx.runtime.kind`:
 
 - **Tauri provider** (`providers/tauri.ts`) — registers the OS `onOpenUrl` listener (lazily
   imported `@tauri-apps/plugin-deep-link`) as part of provider resolution; `dispose()` unregisters
-  it at `app.stop()`. `getCurrent()` wraps the plugin's `getCurrent()` (first URL, or `null`).
-- **Web provider** (`providers/web.ts`) — captures the page's launch URL (`location.href`) at
-  construction time; no push deliveries occur on the web in v1 (PWA `protocol_handlers`/
-  `launchQueue` require installed-PWA manifest configuration outside this framework's runtime
-  scope). `getCurrent()` resolves `ok(null)` under SSR where `location` is absent.
+  it at `app.stop()`. `getCurrent()` wraps the plugin's `getCurrent()` (first URL, or `null`) and
+  forwards any *further* launch URLs down the delivery channel instead of dropping them.
+- **Web provider** (`providers/web.ts`) — reads an explicit deep-link parameter off the page URL
+  at construction time (`?deeplink=` or `#deeplink=`); no push deliveries occur on the web in v1
+  (PWA `protocol_handlers`/`launchQueue` require installed-PWA manifest configuration outside this
+  framework's runtime scope). `getCurrent()` resolves `ok(null)` for an ordinary page visit and
+  under SSR where `location` is absent.
 
 Both providers satisfy the same structural `DeepLinkProvider` interface (`providers/types.ts`).
 
@@ -62,7 +64,8 @@ type Unsubscribe = () => void;
 
 | Situation | Result |
 |-----------|--------|
-| No launch URL (or web SSR — `location` absent) | `ok(null)` |
+| No launch URL (Tauri), or the page URL carries no `deeplink` parameter / SSR (web) | `ok(null)` |
+| Web: the `deeplink` parameter is empty or not decodable | `ok(null)` (logged at `debug`) |
 | Launch URL's scheme not in the non-empty allowlist | `ok(null)` (filtered, logged at `debug`) |
 | Provider resolution failed (`@tauri-apps/plugin-deep-link` import or `onOpenUrl` registration rejected) | `err(kind, "unavailable", message)` |
 | API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
@@ -75,19 +78,27 @@ a typed error). Caught errors are also logged via `ctx.log.error`.
 
 ## The delivery pipeline
 
-Every runtime OS delivery passes through a filter → dedup → emit + notify pipeline
+Every runtime OS delivery passes through a filter → launch-replay guard → emit + notify pipeline
 (`createDeliver` in `api.ts`), wired as the provider's `onUrl` channel at `onStart`:
 
 1. **Scheme filter** — when `config.schemes` is non-empty and the URL's scheme is not listed, the
-   URL is dropped and logged at `debug` level.
-2. **Dedup** — `getCurrent()` on the upstream `@tauri-apps/plugin-deep-link` is
-   **acknowledged-buggy**: it replays the last-ever URL on every `onOpenUrl()` registration (e.g.
-   on remount/HMR). The plugin guards against this by comparing the incoming URL against
-   `state.lastUrl`; an identical URL is dropped silently (and logged at `debug`). The provider
-   itself does NOT dedupe — the plugin layer is the single guard.
+   URL is dropped and logged at `debug` level. A filtered URL does not consume the guard below.
+2. **Launch-replay guard** — the OS can deliver the launch URL to a listener that has just
+   registered, and `getCurrent()` already handed the app that same URL. So the *first* delivery is
+   dropped when it equals the launch URL `getCurrent()` recorded (`state.launchUrl`), and the
+   window closes immediately (`state.launchReplayDone`). That is the only dedup there is:
+   **a repeat of the same URL later is a real user action and is delivered.** The provider itself
+   does not dedupe — the plugin layer is the single guard.
 3. **Emit + notify** — the plugin emits the typed `deepLink:open` event, then calls every
    `onOpen()` subscriber. A subscriber that throws is caught and logged (`ctx.log.error`) so one
    bad island cannot break delivery to the others.
+
+| Sequence | Outcome |
+|----------|---------|
+| `getCurrent()` → `myapp://a`, then the OS replays `myapp://a` | replay dropped (`deepLink:launch-replay-dropped`) |
+| …then `myapp://a` arrives again | delivered |
+| `myapp://a`, then `myapp://b` | both delivered |
+| `myapp://a` twice with no launch URL read | both delivered |
 
 ## Configuration
 
@@ -145,8 +156,8 @@ plumbing for other plugins, not the primary consumer-facing surface.
 
 | Aspect | Tauri | Web |
 |--------|-------|-----|
-| Backing API | `@tauri-apps/plugin-deep-link` (lazy import) | `location.href` snapshot at resolution |
-| `getCurrent()` | first URL from the plugin's `getCurrent()`, or `null` | captured launch URL, or `null` under SSR |
+| Backing API | `@tauri-apps/plugin-deep-link` (lazy import) | `deeplink` parameter of `location.href`, read at resolution |
+| `getCurrent()` | first URL from the plugin's `getCurrent()`, or `null`; further URLs are forwarded through `onOpen`/`deepLink:open` (once) | the decoded `deeplink` parameter, else `null` |
 | Runtime deliveries (`onOpen` / `deepLink:open`) | yes — OS `onOpenUrl` listener registered at resolution | none in v1 (subscriptions succeed but never fire) |
 | `dispose()` (at `app.stop()`) | unregisters the `onOpenUrl` listener | no-op |
 
@@ -161,6 +172,11 @@ plumbing for other plugins, not the primary consumer-facing surface.
   `deepLink:open`.
 - **Scheme registration** (the OS knowing `myapp://` belongs to this app) is the native packager's
   manifest contract, not this plugin's — the allowlist here only filters what gets delivered.
+- **Handing a web page a deep link:** put the link in a `deeplink` parameter, percent-encoded,
+  in either the query or the hash — `https://app.example/?deeplink=myapp%3A%2F%2Fopen%3Fid%3D1`
+  or `https://app.example/#deeplink=myapp%3A%2F%2Fopen`. The page's own address is never treated
+  as a deep link: an ordinary visit must not look like an app launch, and `location.href` would
+  otherwise fail the scheme allowlist or, with an empty allowlist, deliver every page load.
 - **Testing:** the Tauri path requires `vi.mock("@tauri-apps/plugin-deep-link")` with
   `forceKind: "tauri"` (force-testing rule — see the runtime README); simulate deliveries by
   invoking the mocked `onOpenUrl` callback.
@@ -172,7 +188,7 @@ plumbing for other plugins, not the primary consumer-facing surface.
 | macOS | Yes | Yes |
 | iOS / Android | Yes | Yes |
 | **Windows / Linux** | Yes | **Not guaranteed without a cross-repo contract** — see below |
-| Web | Yes (page launch URL) | No push channel in v1 |
+| Web | Only via an explicit `?deeplink=`/`#deeplink=` parameter | No push channel in v1 |
 
 **Windows/Linux cross-repo contract (documented, not solvable here):** on Windows and Linux, the
 OS delivers a deep-link URL as a CLI argument to a **new process instance**, not an `onOpenUrl`

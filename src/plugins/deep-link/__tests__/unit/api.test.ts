@@ -16,8 +16,14 @@ const createMockCtx = (overrides?: Partial<DeepLinkContext>): DeepLinkContext =>
   config: { schemes: [], ...overrides?.config },
   state:
     overrides?.state ??
-    // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
-    ({ provider: null, lastUrl: null, subscribers: new Set() } satisfies DeepLinkState),
+    ({
+      // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
+      provider: null,
+      // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+      launchUrl: null,
+      launchReplayDone: false,
+      subscribers: new Set()
+    } satisfies DeepLinkState),
   emit: overrides?.emit ?? vi.fn(),
   global: overrides?.global ?? {},
   runtime: overrides?.runtime ?? { kind: "web", platform: "unknown" },
@@ -46,8 +52,9 @@ describe("createDeepLinkApi", () => {
       });
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: true, provider }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ state });
@@ -63,8 +70,9 @@ describe("createDeepLinkApi", () => {
       const failure = err("tauri", "unavailable", "boom");
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: false, failure }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ state });
@@ -81,8 +89,9 @@ describe("createDeepLinkApi", () => {
       });
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: true, provider }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ state });
@@ -105,8 +114,9 @@ describe("createDeepLinkApi", () => {
       });
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: true, provider }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ state });
@@ -124,8 +134,9 @@ describe("createDeepLinkApi", () => {
       });
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: true, provider }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ config: { schemes: ["myapp"] }, state });
@@ -146,8 +157,9 @@ describe("createDeepLinkApi", () => {
       });
       const state: DeepLinkState = {
         provider: Promise.resolve({ ok: true, provider }),
-        // eslint-disable-next-line unicorn/no-null -- lastUrl is null until the first delivery
-        lastUrl: null,
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
         subscribers: new Set()
       };
       const ctx = createMockCtx({ config: { schemes: ["myapp"] }, state });
@@ -156,6 +168,44 @@ describe("createDeepLinkApi", () => {
       const result = await api.getCurrent();
 
       expect(result).toEqual({ ok: true, value: "myapp://open", provider: "tauri" });
+    });
+
+    it("records the launch URL in state so the one-time replay can be recognized", async () => {
+      const provider = createFakeProvider({
+        getCurrent: vi.fn(async () => ok("myapp://open", "tauri"))
+      });
+      const state: DeepLinkState = {
+        provider: Promise.resolve({ ok: true, provider }),
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
+        subscribers: new Set()
+      };
+      const ctx = createMockCtx({ state });
+      const api = createDeepLinkApi(ctx);
+
+      await api.getCurrent();
+
+      expect(ctx.state.launchUrl).toBe("myapp://open");
+    });
+
+    it("does not record a scheme-filtered launch URL", async () => {
+      const provider = createFakeProvider({
+        getCurrent: vi.fn(async () => ok("other://open", "tauri"))
+      });
+      const state: DeepLinkState = {
+        provider: Promise.resolve({ ok: true, provider }),
+        // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+        launchUrl: null,
+        launchReplayDone: false,
+        subscribers: new Set()
+      };
+      const ctx = createMockCtx({ config: { schemes: ["myapp"] }, state });
+      const api = createDeepLinkApi(ctx);
+
+      await api.getCurrent();
+
+      expect(ctx.state.launchUrl).toBeNull();
     });
   });
 

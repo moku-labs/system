@@ -23,15 +23,58 @@ describe("createWebDeepLinkProvider", () => {
       globalScope.location = { href: "https://example.com/launch?ref=deeplink" };
     });
 
-    it("getCurrent returns location.href", async () => {
+    it("getCurrent returns ok(null) for an ordinary page URL — the page itself is not a deep link", async () => {
       const provider = await createWebDeepLinkProvider({ schemes: [] }, createMockLog());
 
       const result = await provider.getCurrent();
 
-      expect(result).toEqual({
-        ok: true,
-        value: "https://example.com/launch?ref=deeplink",
-        provider: "web"
+      // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — no deep-link data on the page URL
+      expect(result).toEqual({ ok: true, value: null, provider: "web" });
+    });
+
+    it("getCurrent returns the decoded ?deeplink= value", async () => {
+      globalScope.location = {
+        href: "https://example.com/launch?deeplink=myapp%3A%2F%2Fopen%3Fid%3D1&ref=mail"
+      };
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, createMockLog());
+
+      const result = await provider.getCurrent();
+
+      expect(result).toEqual({ ok: true, value: "myapp://open?id=1", provider: "web" });
+    });
+
+    it("getCurrent returns the decoded #deeplink= value", async () => {
+      globalScope.location = {
+        href: "https://example.com/launch#deeplink=myapp%3A%2F%2Fopen"
+      };
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, createMockLog());
+
+      const result = await provider.getCurrent();
+
+      expect(result).toEqual({ ok: true, value: "myapp://open", provider: "web" });
+    });
+
+    it("getCurrent returns ok(null) for an empty deeplink parameter", async () => {
+      globalScope.location = { href: "https://example.com/launch?deeplink=" };
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, createMockLog());
+
+      const result = await provider.getCurrent();
+
+      // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — empty parameter carries no deep link
+      expect(result).toEqual({ ok: true, value: null, provider: "web" });
+    });
+
+    it("getCurrent returns ok(null) and logs when the parameter is malformed percent-encoding", async () => {
+      globalScope.location = { href: "https://example.com/launch?deeplink=%E0%A4%A" };
+      const log = createMockLog();
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, log);
+
+      const result = await provider.getCurrent();
+
+      // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — undecodable parameter
+      expect(result).toEqual({ ok: true, value: null, provider: "web" });
+      expect(log.debug).toHaveBeenCalledWith("deepLink:web-launch-undecodable", {
+        raw: "%E0%A4%A"
       });
     });
 

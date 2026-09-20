@@ -30,8 +30,14 @@ const createMockCtx = (overrides?: Partial<DeepLinkContext>): DeepLinkContext =>
   config: { schemes: [], ...overrides?.config },
   state:
     overrides?.state ??
-    // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
-    ({ provider: null, lastUrl: null, subscribers: new Set() } satisfies DeepLinkState),
+    ({
+      // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
+      provider: null,
+      // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
+      launchUrl: null,
+      launchReplayDone: false,
+      subscribers: new Set()
+    } satisfies DeepLinkState),
   emit: overrides?.emit ?? vi.fn(),
   global: overrides?.global ?? {},
   runtime: overrides?.runtime ?? { kind: "web", platform: "unknown" },

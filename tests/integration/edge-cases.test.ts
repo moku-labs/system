@@ -27,7 +27,8 @@ const tauriMocks = vi.hoisted(() => {
     delete: vi.fn(async () => true),
     keys: vi.fn(async () => [] as string[]),
     clear: vi.fn(async () => undefined),
-    save: vi.fn(async () => undefined)
+    save: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined)
   };
   const mockStoreLoad = vi.fn(async () => {
     if (gate !== undefined) {
@@ -157,7 +158,7 @@ describe("framework: edge cases (integration)", () => {
   });
 
   describe("deepLink delivery pipeline under stress", () => {
-    it("rapid deliveries with exact replays and filtered schemes reach subscribers deduped, filtered, in order", async () => {
+    it("rapid deliveries with repeats and filtered schemes reach subscribers filtered, in order", async () => {
       const framework = coreConfig.createCore(coreConfig, {
         plugins: [deepLinkPlugin],
         pluginConfigs: { runtime: { forceKind: "tauri" }, deepLink: { schemes: ["myapp"] } }
@@ -176,16 +177,16 @@ describe("framework: edge cases (integration)", () => {
       const handler = tauriMocks.getHandler();
       expect(handler).toBeDefined();
 
-      // Rapid burst: a batch with an internal exact replay, a filtered scheme, an
-      // exact replay of the last delivered URL, a new URL, then the first URL again
-      // (dedup only guards the immediately-preceding delivery).
+      // Rapid burst: a batch with an internal repeat, a filtered scheme, another
+      // repeat, a new URL, then the first URL again. No launch URL was reported, so
+      // nothing is a replay — every allowed delivery reaches the subscribers in order.
       handler?.(["myapp://one", "myapp://one"]);
       handler?.(["other://intruder"]);
       handler?.(["myapp://one"]);
       handler?.(["myapp://two"]);
       handler?.(["myapp://one"]);
 
-      const expected = ["myapp://one", "myapp://two", "myapp://one"];
+      const expected = ["myapp://one", "myapp://one", "myapp://one", "myapp://two", "myapp://one"];
       expect(first).toEqual(expected);
       expect(second).toEqual(expected);
 

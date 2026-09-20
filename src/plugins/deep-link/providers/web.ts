@@ -1,8 +1,10 @@
 /**
  * @file deep-link web provider — launch URL only (no push deliveries in v1: PWA
  * `protocol_handlers`/`launchQueue` require installed-PWA manifest config outside this
- * framework's runtime scope). No browser globals at module scope (SSR-safe) — `location`
- * is read inside the factory body, not at import time.
+ * framework's runtime scope). A launch URL exists only when the page URL carries an
+ * explicit `deeplink` parameter (`?deeplink=` or `#deeplink=`); the page's own address
+ * is not a deep link. No browser globals at module scope (SSR-safe) — `location` is read
+ * inside the factory body, not at import time.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
@@ -19,14 +21,44 @@ const PROVIDER = "web";
  */
 type WebLocation = { readonly href: string };
 
+/** Query/hash parameter a web page uses to hand this app a deep link. */
+const DEEP_LINK_PARAMETER = /[?#&]deeplink=([^&#]*)/;
+
+/**
+ * Read the deep link a page URL carries in `?deeplink=` or `#deeplink=`. The value is
+ * percent-encoded by whoever built the link; a malformed encoding is reported at debug
+ * level and treated as "no launch URL" rather than thrown at the caller.
+ *
+ * @param {string} href - The page URL.
+ * @param {LogApi} log - ctx.log for reporting an undecodable parameter (MC2).
+ * @returns {string | null} The decoded deep link, or null when the page carries none.
+ * @example
+ * ```ts
+ * readDeepLinkParameter("https://a.test/?deeplink=myapp%3A%2F%2Fopen", log); // "myapp://open"
+ * ```
+ */
+function readDeepLinkParameter(href: string, log: LogApi): string | null {
+  const raw = DEEP_LINK_PARAMETER.exec(href)?.[1];
+  if (raw === undefined || raw === "") {
+    // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — no deep-link data on this page
+    return null;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    log.debug("deepLink:web-launch-undecodable", { raw });
+    // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — the parameter could not be decoded
+    return null;
+  }
+}
+
 /**
  * Create the web deep-link provider: getCurrent reflects the launch URL captured at
  * construction time; dispose is a no-op (no OS listener exists on web).
  *
  * @param {DeepLinkConfig} _config - Resolved config (scheme allowlist; filtering happens
  *   in the plugin layer, not here).
- * @param {LogApi} _log - ctx.log for error reporting (MC2); unused on the web provider,
- *   since getCurrent here cannot throw.
+ * @param {LogApi} log - ctx.log for reporting an undecodable deep-link parameter (MC2).
  * @returns {Promise<DeepLinkProvider>} The web-backed deep-link provider.
  * @example
  * ```ts
@@ -35,19 +67,22 @@ type WebLocation = { readonly href: string };
  */
 export async function createWebDeepLinkProvider(
   _config: DeepLinkConfig,
-  _log: LogApi
+  log: LogApi
 ): Promise<DeepLinkProvider> {
   // `location` is a real DOM/browser global with no ambient declaration under this
   // project's DOM-lib-free tsconfig — narrowed immediately via a local structural
   // type (R9's "real boundary, narrowed before use" carve-out), never `any`.
   const globalScope = globalThis as { location?: WebLocation };
-  // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — null when no launch URL / SSR
-  const launchUrl = globalScope.location === undefined ? null : globalScope.location.href;
+  const launchUrl =
+    globalScope.location === undefined
+      ? // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — no location global (SSR)
+        null
+      : readDeepLinkParameter(globalScope.location.href, log);
 
   return {
     /**
-     * The URL the app was launched with (the captured page location); null when none
-     * (e.g. server-rendered).
+     * The deep link the page URL carried in `?deeplink=`/`#deeplink=`; null when the
+     * page carries none (an ordinary page visit) or there is no location (SSR).
      *
      * @returns {Promise<SystemResult<string | null>>} Launch URL or null.
      * @example

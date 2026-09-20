@@ -191,7 +191,7 @@ describe("framework: cross-plugin composition (integration)", () => {
     it("one app carries all five capabilities on their web providers", async () => {
       stubWebNotification("granted");
       const clipboard = stubWebClipboard("hello from web clipboard");
-      stubWebLocation("https://example.test/landing?ref=cross");
+      stubWebLocation("https://example.test/landing?deeplink=myapp%3A%2F%2Fcross&ref=cross");
 
       const app = buildSystemApp({
         runtime: { forceKind: "web" },
@@ -244,7 +244,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       // deepLink — getCurrent reflects the launch URL captured from the stubbed location
       expect(await app.deepLink.getCurrent()).toEqual({
         ok: true,
-        value: "https://example.test/landing?ref=cross",
+        value: "myapp://cross",
         provider: "web"
       });
 
@@ -414,7 +414,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       // No stubWebNotification here — Node has no Notification global, so the notify
       // web provider resolves to the all-unsupported stand-in while its siblings load fine.
       stubWebClipboard("isolated clipboard");
-      stubWebLocation("https://example.test/isolated");
+      stubWebLocation("https://example.test/isolated?deeplink=myapp%3A%2F%2Fisolated");
 
       const app = buildSystemApp({
         runtime: { forceKind: "web" },
@@ -445,7 +445,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       });
       expect(await app.deepLink.getCurrent()).toEqual({
         ok: true,
-        value: "https://example.test/isolated",
+        value: "myapp://isolated",
         provider: "web"
       });
 

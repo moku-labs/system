@@ -41,16 +41,18 @@ export type DeepLinkEvents = {
 export type Unsubscribe = () => void;
 
 /**
- * Internal deep-link state — resolution slot + dedup guard + island subscribers.
+ * Internal deep-link state — resolution slot + launch-replay guard + island subscribers.
  *
  * @example
  * ```ts
- * { provider: null, lastUrl: null, subscribers: new Set() }
+ * { provider: null, launchUrl: null, launchReplayDone: false, subscribers: new Set() }
  * ```
  */
 export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
-  /** Last delivered URL — dedup guard against the upstream getCurrent() replay bug. */
-  lastUrl: string | null;
+  /** The launch URL as read by getCurrent() — what the one-time replay is compared against. */
+  launchUrl: string | null;
+  /** Whether the first delivery has been seen, closing the one-time replay window. */
+  launchReplayDone: boolean;
   /** onOpen() callbacks, notified after dedup + scheme filtering. */
   subscribers: Set<(payload: { url: string }) => void>;
 };

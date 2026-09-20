@@ -71,6 +71,38 @@ describe("createTauriDeepLinkProvider", () => {
     expect(result).toEqual({ ok: true, value: "myapp://open", provider: "tauri" });
   });
 
+  it("getCurrent forwards the launch URLs past the first through onUrl instead of dropping them", async () => {
+    mockGetCurrent.mockResolvedValue(["myapp://open", "myapp://second", "myapp://third"]);
+    const onUrl = vi.fn();
+    const provider = await createTauriDeepLinkProvider({ schemes: [] }, createMockLog(), onUrl);
+
+    await provider.getCurrent();
+
+    expect(onUrl).toHaveBeenNthCalledWith(1, "myapp://second");
+    expect(onUrl).toHaveBeenNthCalledWith(2, "myapp://third");
+  });
+
+  it("getCurrent forwards the extra launch URLs once, not again on a second call", async () => {
+    mockGetCurrent.mockResolvedValue(["myapp://open", "myapp://second"]);
+    const onUrl = vi.fn();
+    const provider = await createTauriDeepLinkProvider({ schemes: [] }, createMockLog(), onUrl);
+
+    await provider.getCurrent();
+    await provider.getCurrent();
+
+    expect(onUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("getCurrent forwards nothing when the plugin reports a single launch URL", async () => {
+    mockGetCurrent.mockResolvedValue(["myapp://open"]);
+    const onUrl = vi.fn();
+    const provider = await createTauriDeepLinkProvider({ schemes: [] }, createMockLog(), onUrl);
+
+    await provider.getCurrent();
+
+    expect(onUrl).not.toHaveBeenCalled();
+  });
+
   it("getCurrent throw maps to reason 'error' with the message preserved, never 'denied'", async () => {
     mockGetCurrent.mockRejectedValue(new Error("plugin not registered"));
     const log = createMockLog();

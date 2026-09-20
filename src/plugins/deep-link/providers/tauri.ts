@@ -2,9 +2,9 @@
  * @file deep-link Tauri provider — `@tauri-apps/plugin-deep-link` glue. The package is
  * reached ONLY via `await import("@tauri-apps/plugin-deep-link")` inside the factory
  * body (stays a live lazy import in dist). Registers onOpenUrl onto the onUrl channel;
- * dispose unregisters the OS listener. The provider does NOT dedupe — onOpenUrl
- * registration may itself replay the last URL, so the plugin-layer dedup
- * (state.lastUrl, see api.ts's createDeliver) is the guard.
+ * dispose unregisters the OS listener. The provider does NOT dedupe — the OS may replay
+ * the launch URL onto the fresh listener, so the plugin-layer guard (state.launchUrl +
+ * state.launchReplayDone, see api.ts's createDeliver) is what drops that one replay.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
@@ -54,10 +54,16 @@ export async function createTauriDeepLinkProvider(
     }
   });
 
+  // getCurrent() reports a LIST; its API returns one URL. The rest are real launch
+  // intents, so they go down the delivery channel — once, however often getCurrent
+  // is called.
+  let extrasForwarded = false;
+
   return {
     /**
      * The URL the app was launched with (first element of the plugin's URL list, or
-     * null when none).
+     * null when none). Any further launch URLs are forwarded through onUrl instead of
+     * being dropped.
      *
      * @returns {Promise<SystemResult<string | null>>} Launch URL or null.
      * @example
@@ -68,6 +74,12 @@ export async function createTauriDeepLinkProvider(
     getCurrent: async (): Promise<SystemResult<string | null>> => {
       try {
         const urls = await getCurrent();
+        if (!extrasForwarded && urls !== null && urls.length > 1) {
+          extrasForwarded = true;
+          for (const extra of urls.slice(1)) {
+            onUrl(extra);
+          }
+        }
         // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — null is the documented "no launch URL" value
         return ok(urls?.[0] ?? null, PROVIDER);
       } catch (error) {
