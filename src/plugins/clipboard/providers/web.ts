@@ -57,8 +57,32 @@ function toError(thrown: unknown): Error {
 }
 
 /**
+ * Duck-type the one unambiguous web-side "denied" signal: a rejection whose `name` is
+ * `"NotAllowedError"`. Matched on the property, not `instanceof DOMException` — this
+ * package compiles without the DOM lib, and a webview that never populated the
+ * `DOMException` global still rejects with a `name`-carrying object.
+ *
+ * @param {unknown} thrown - Whatever was thrown or rejected.
+ * @returns {boolean} True when the rejection is a permission denial.
+ * @example
+ * ```ts
+ * isNotAllowedError(new DOMException("denied", "NotAllowedError")); // true
+ * ```
+ */
+function isNotAllowedError(
+  thrown: unknown
+): thrown is { readonly name: string; readonly message?: unknown } {
+  return (
+    typeof thrown === "object" &&
+    thrown !== null &&
+    "name" in thrown &&
+    thrown.name === "NotAllowedError"
+  );
+}
+
+/**
  * Map a thrown clipboard error to a SystemResult failure. A `NotAllowedError`
- * DOMException is the one unambiguous web-side "denied" signal; every other throw
+ * rejection is the one unambiguous web-side "denied" signal; every other throw
  * maps to "error" (D-004 — never guess "denied" from an ambiguous throw).
  *
  * @param {LogApi} log - ctx.log for error reporting (MC2).
@@ -71,8 +95,8 @@ function toError(thrown: unknown): Error {
  * ```
  */
 function mapClipboardThrow(log: LogApi, logKey: string, thrown: unknown): SystemResult<never> {
-  if (thrown instanceof DOMException && thrown.name === "NotAllowedError") {
-    return err(PROVIDER, "denied", thrown.message);
+  if (isNotAllowedError(thrown)) {
+    return err(PROVIDER, "denied", typeof thrown.message === "string" ? thrown.message : undefined);
   }
   log.error(logKey, undefined, toError(thrown));
   return mapThrownToResult(PROVIDER, thrown);

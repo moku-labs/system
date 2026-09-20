@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   fakeTrayIcon,
   mockTrayIconNew,
+  mockDefaultWindowIcon,
   mockMenuNew,
   mockDeepLinkGetCurrent,
   mockOnOpenUrl,
@@ -28,6 +29,8 @@ const {
     close: vi.fn(async () => undefined)
   };
   const mockTrayIconNew = vi.fn(async () => fakeTrayIcon);
+  // The status item is created with the app's default window icon unless tray.icon is set.
+  const mockDefaultWindowIcon = vi.fn(async () => ({ rid: 1 }));
 
   // Local structural mirror of @tauri-apps/api/menu's MenuItemOptions — captures the
   // wired click handlers so the journey can "click" a tray item.
@@ -37,7 +40,10 @@ const {
     enabled?: boolean;
     action?: (id: string) => void;
   };
-  const mockMenuNew = vi.fn(async (options: { items: NativeMenuItemOptions[] }) => ({ options }));
+  const mockMenuNew = vi.fn(async (options: { items: NativeMenuItemOptions[] }) => ({
+    options,
+    close: vi.fn(async () => undefined)
+  }));
 
   const mockUnlisten = vi.fn();
   const mockOnOpenUrl = vi.fn(async (_handler: (urls: string[]) => void) => mockUnlisten);
@@ -57,13 +63,15 @@ const {
       clear: async () => {
         tauriStoreData.clear();
       },
-      save: vi.fn(async () => undefined)
+      save: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined)
     })
   );
 
   return {
     fakeTrayIcon,
     mockTrayIconNew,
+    mockDefaultWindowIcon,
     mockMenuNew,
     mockDeepLinkGetCurrent,
     mockOnOpenUrl,
@@ -75,6 +83,7 @@ const {
 
 vi.mock("@tauri-apps/api/tray", () => ({ TrayIcon: { new: mockTrayIconNew } }));
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: mockMenuNew } }));
+vi.mock("@tauri-apps/api/app", () => ({ defaultWindowIcon: mockDefaultWindowIcon }));
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: mockDeepLinkGetCurrent,
   onOpenUrl: mockOnOpenUrl
@@ -260,7 +269,10 @@ describe("framework: consumer user journeys (integration)", () => {
         { id: "quit", text: "Quit" }
       ])
     ).toEqual({ ok: true, value: undefined, provider: "tauri" });
-    expect(mockTrayIconNew).toHaveBeenCalledWith({ id: "desktop-boot-tray" });
+    expect(mockTrayIconNew).toHaveBeenCalledWith({
+      id: "desktop-boot-tray",
+      icon: { rid: 1 }
+    });
     expect(fakeTrayIcon.setMenu).toHaveBeenCalledTimes(1);
 
     // The native menu was built from our items and the click handler is wired: a

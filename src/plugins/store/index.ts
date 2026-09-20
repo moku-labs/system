@@ -11,6 +11,9 @@ import { createStoreState } from "./state";
 import type { StoreConfig } from "./types";
 
 const PLUGIN_NAME = "store";
+// The name becomes a filename segment under app_data_dir on the Tauri side, so it is
+// restricted to file-safe characters: no separators, no leading dot, no "..".
+const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const defaultConfig: StoreConfig = { name: "moku-system" };
 
 export const storePlugin = createPlugin(PLUGIN_NAME, {
@@ -19,9 +22,9 @@ export const storePlugin = createPlugin(PLUGIN_NAME, {
   api: createStoreApi,
   // eslint-disable-next-line jsdoc/require-jsdoc
   onInit: ctx => {
-    if (ctx.config.name.trim() === "") {
+    if (!NAME_PATTERN.test(ctx.config.name)) {
       throw new TypeError(
-        "[system] store.name must be a non-empty string.\n  Provide a name in pluginConfigs."
+        `[system] store.name must be a file-safe namespace — received "${ctx.config.name}".\n  Use letters, digits, ".", "-" or "_" and start with a letter or digit, e.g. pluginConfigs: { store: { name: "my-app" } }.`
       );
     }
   },

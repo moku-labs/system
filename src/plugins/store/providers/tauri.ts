@@ -151,14 +151,28 @@ export async function createTauriStoreProvider(
     },
 
     /**
-     * Teardown — no-op; there is no OS artifact to release for the store file provider.
+     * Teardown — flush pending writes, then release the underlying `Store` Resource so
+     * its Rust-side handle is dropped at app.stop(). Never rejects: a failing save must
+     * not skip the close, and a failing close must not break the teardown chain; both
+     * are reported through ctx.log instead.
      *
-     * @returns {Promise<void>} Resolves immediately.
+     * @returns {Promise<void>} Resolves once the store is flushed and closed.
      * @example
      * ```ts
      * await provider.dispose();
      * ```
      */
-    dispose: (): Promise<void> => Promise.resolve()
+    dispose: async (): Promise<void> => {
+      try {
+        await store.save();
+      } catch (error) {
+        log.error("store:tauri-dispose-save-failed", undefined, toError(error));
+      }
+      try {
+        await store.close();
+      } catch (error) {
+        log.error("store:tauri-dispose-close-failed", undefined, toError(error));
+      }
+    }
   };
 }

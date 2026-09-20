@@ -1,19 +1,44 @@
 /**
  * @file tray Tauri provider — `@tauri-apps/api` tray/menu glue. The packages are
  * reached ONLY via `await import("@tauri-apps/api/tray")` + `await import("@tauri-apps/api/menu")`
- * inside the factory body (stay live lazy imports in dist). Resolution itself is
- * side-effect-free: the factory never creates the OS tray icon. A private
- * `ensureIcon()` creates it lazily on the first mutating call and caches the handle
- * in this closure; `destroy()`/`dispose()` destroy it idempotently, and the next
- * mutating call after a destroy recreates it lazily again.
+ * (+ `@tauri-apps/api/app` for the default icon) inside the factory body (stay live
+ * lazy imports in dist). Resolution itself is side-effect-free: the factory never
+ * creates the OS tray icon. A private `ensureIcon()` creates it lazily on the first
+ * mutating call and caches the handle in this closure; `destroy()`/`dispose()` destroy
+ * it idempotently, and the next mutating call after a destroy recreates it lazily
+ * again. The attached `Menu` is a Rust-side resource too: exactly one is kept alive at
+ * a time, the replaced one is closed after the swap, and teardown closes the last one.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
-import { mapThrownToResult, ok } from "../../runtime/result";
+import { err, mapThrownToResult, ok } from "../../runtime/result";
 import type { TrayConfig, TrayMenuItem } from "../types";
 import type { TrayProvider } from "./types";
 
 const PROVIDER = "tauri";
+
+/**
+ * Failure of the status item's image itself — a packaging/environment problem rather
+ * than a bad call, so it maps to "unavailable" and names the config field to fix.
+ */
+class TrayIconUnavailableError extends Error {
+  /**
+   * Build the error with a message that already names `tray.icon`.
+   *
+   * @param {string} reason - Why the icon could not be loaded.
+   * @example
+   * ```ts
+   * throw new TrayIconUnavailableError("the app has no default window icon");
+   * ```
+   */
+  constructor(reason: string) {
+    super(`tray icon could not be loaded: ${reason}. Set tray.icon to a readable image path`);
+    this.name = "TrayIconUnavailableError";
+  }
+}
+
+/** Errors a missing icon file surfaces as across the three desktop platforms. */
+const MISSING_ICON_FILE_PATTERN = /no such file|not found|cannot find|os error 2/i;
 
 /**
  * Convert a thrown/rejected value into an Error for ctx.log.error's typed `error` param.
@@ -27,6 +52,25 @@ const PROVIDER = "tauri";
  */
 function toError(thrown: unknown): Error {
   return thrown instanceof Error ? thrown : new Error(String(thrown));
+}
+
+/**
+ * Map a tray failure to its SystemResult. An unloadable icon is "unavailable" (fix the
+ * packaging or `tray.icon`); everything else is "error" — never "denied", since Tauri
+ * ACL throws are ambiguous (D-004).
+ *
+ * @param {unknown} thrown - Whatever was thrown or rejected.
+ * @returns {SystemResult<never>} The mapped failure.
+ * @example
+ * ```ts
+ * catch (error) { return mapTrayThrow(error); }
+ * ```
+ */
+function mapTrayThrow(thrown: unknown): SystemResult<never> {
+  if (thrown instanceof TrayIconUnavailableError) {
+    return err(PROVIDER, "unavailable", thrown.message);
+  }
+  return mapThrownToResult(PROVIDER, thrown);
 }
 
 /**
@@ -96,7 +140,112 @@ export async function createTauriTrayProvider(
   const { TrayIcon } = await import("@tauri-apps/api/tray");
   const { Menu } = await import("@tauri-apps/api/menu");
 
-  let iconPromise: Promise<Awaited<ReturnType<typeof TrayIcon.new>>> | undefined;
+  /** Handle to the live OS status item. */
+  type TrayIconHandle = Awaited<ReturnType<typeof TrayIcon.new>>;
+  /** Handle to a Rust-side menu resource attached to the status item. */
+  type MenuHandle = Awaited<ReturnType<typeof Menu.new>>;
+  /** What TrayIcon.new accepts as its image: a path, raw bytes, or an Image resource. */
+  type IconSource = NonNullable<NonNullable<Parameters<typeof TrayIcon.new>[0]>["icon"]>;
+
+  let iconPromise: Promise<TrayIconHandle> | undefined;
+  let currentMenu: MenuHandle | undefined;
+
+  /**
+   * The image the status item is created with: the configured `tray.icon` when set,
+   * otherwise the app's own default window icon. A relative path is resolved against
+   * the process working directory, which a bundled app does not control, so the
+   * bundle's window icon — not a path guess — is the default that actually works.
+   *
+   * @returns {Promise<IconSource>} The icon to hand to TrayIcon.new.
+   * @example
+   * ```ts
+   * const icon = await resolveIcon();
+   * ```
+   */
+  async function resolveIcon(): Promise<IconSource> {
+    if (config.icon !== undefined) {
+      return config.icon;
+    }
+    const { defaultWindowIcon } = await import("@tauri-apps/api/app");
+    const icon = await defaultWindowIcon();
+    if (!icon) {
+      throw new TrayIconUnavailableError("the app bundle exposes no default window icon");
+    }
+    return icon;
+  }
+
+  /**
+   * Create the OS status item with its icon, translating a missing icon file into the
+   * typed "unavailable" failure instead of an opaque OS message.
+   *
+   * @returns {Promise<TrayIconHandle>} The freshly created tray icon handle.
+   * @example
+   * ```ts
+   * const trayIcon = await createIcon();
+   * ```
+   */
+  async function createIcon(): Promise<TrayIconHandle> {
+    const icon = await resolveIcon();
+    try {
+      return await TrayIcon.new({ id: config.id, icon });
+    } catch (error) {
+      if (
+        error instanceof TrayIconUnavailableError ||
+        !MISSING_ICON_FILE_PATTERN.test(String(error))
+      ) {
+        throw error;
+      }
+      throw new TrayIconUnavailableError(toError(error).message);
+    }
+  }
+
+  /**
+   * Close a Rust-side menu resource, reporting a failure through ctx.log instead of
+   * letting teardown hygiene break the caller's result.
+   *
+   * @param {MenuHandle | undefined} menu - The menu to release; undefined is a no-op.
+   * @returns {Promise<void>} Resolves once the menu is closed (or the failure is logged).
+   * @example
+   * ```ts
+   * await closeMenu(previousMenu);
+   * ```
+   */
+  async function closeMenu(menu: MenuHandle | undefined): Promise<void> {
+    if (menu === undefined) {
+      return;
+    }
+    try {
+      await menu.close();
+    } catch (error) {
+      log.error("tray:tauri-menu-close-failed", undefined, toError(error));
+    }
+  }
+
+  /**
+   * Attach a freshly built menu to the status item, then release the one it replaced.
+   * Every `Menu.new()` allocates a Rust-side resource plus a Channel per item, so
+   * exactly one menu is kept alive at a time — the replaced one is closed only after
+   * the swap succeeded, and a menu that failed to attach is closed immediately.
+   *
+   * @param {TrayIconHandle} trayIcon - The status item to attach to.
+   * @param {MenuHandle} menu - The newly built menu.
+   * @returns {Promise<void>} Resolves once the swap completed.
+   * @example
+   * ```ts
+   * await attachMenu(await ensureIcon(), await Menu.new({ items }));
+   * ```
+   */
+  async function attachMenu(trayIcon: TrayIconHandle, menu: MenuHandle): Promise<void> {
+    try {
+      await trayIcon.setMenu(menu);
+    } catch (error) {
+      await closeMenu(menu);
+      throw error;
+    }
+    const previous = currentMenu;
+    currentMenu = menu;
+    await closeMenu(previous);
+  }
 
   /**
    * Lazily create (or return the in-flight/cached) OS tray icon handle. Caching the
@@ -108,15 +257,15 @@ export async function createTauriTrayProvider(
    * transient OS failure), the cache is cleared so the NEXT mutating call retries
    * instead of replaying the same failure forever.
    *
-   * @returns {Promise<Awaited<ReturnType<typeof TrayIcon.new>>>} The tray icon handle.
+   * @returns {Promise<TrayIconHandle>} The tray icon handle.
    * @example
    * ```ts
    * const trayIcon = await ensureIcon();
    * ```
    */
-  function ensureIcon(): Promise<Awaited<ReturnType<typeof TrayIcon.new>>> {
+  function ensureIcon(): Promise<TrayIconHandle> {
     if (iconPromise === undefined) {
-      iconPromise = TrayIcon.new({ id: config.id }).catch((error: unknown) => {
+      iconPromise = createIcon().catch((error: unknown) => {
         iconPromise = undefined;
         throw error;
       });
@@ -141,22 +290,25 @@ export async function createTauriTrayProvider(
    * ```
    */
   async function destroyIcon(): Promise<void> {
-    if (iconPromise === undefined) {
-      return;
-    }
     const pending = iconPromise;
+    const menu = currentMenu;
     iconPromise = undefined;
-    try {
-      const current = await pending;
-      await current.close();
-    } catch {
-      // The in-flight creation itself failed — nothing was ever created to close.
+    currentMenu = undefined;
+    if (pending !== undefined) {
+      try {
+        const current = await pending;
+        await current.close();
+      } catch {
+        // The in-flight creation itself failed — nothing was ever created to close.
+      }
     }
+    await closeMenu(menu);
   }
 
   return {
     /**
-     * Replace the tray menu. Creates the OS icon lazily on first call.
+     * Replace the tray menu. Creates the OS icon lazily on first call, and releases the
+     * menu this call replaces.
      *
      * @param {TrayMenuItem[]} items - Menu items.
      * @returns {Promise<SystemResult<void>>} ok when applied.
@@ -169,11 +321,11 @@ export async function createTauriTrayProvider(
       try {
         const trayIcon = await ensureIcon();
         const menu = await Menu.new({ items: items.map(item => toNativeMenuItem(item)) });
-        await trayIcon.setMenu(menu);
+        await attachMenu(trayIcon, menu);
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-set-menu-failed", undefined, toError(error));
-        return mapThrownToResult(PROVIDER, error);
+        return mapTrayThrow(error);
       }
     },
 
@@ -194,7 +346,7 @@ export async function createTauriTrayProvider(
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-set-tooltip-failed", { text }, toError(error));
-        return mapThrownToResult(PROVIDER, error);
+        return mapTrayThrow(error);
       }
     },
 
@@ -215,7 +367,7 @@ export async function createTauriTrayProvider(
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-set-icon-failed", { iconPath }, toError(error));
-        return mapThrownToResult(PROVIDER, error);
+        return mapTrayThrow(error);
       }
     },
 
@@ -234,12 +386,13 @@ export async function createTauriTrayProvider(
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-destroy-failed", undefined, toError(error));
-        return mapThrownToResult(PROVIDER, error);
+        return mapTrayThrow(error);
       }
     },
 
     /**
-     * Teardown — destroys the cached OS icon if present (idempotent with destroy()).
+     * Teardown — destroys the cached OS icon and its menu if present (idempotent with
+     * destroy()).
      *
      * @returns {Promise<void>} Resolves once teardown completes.
      * @example

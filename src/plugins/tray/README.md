@@ -79,7 +79,8 @@ type TrayMenuItem = {
 | Provider resolution failed (`@tauri-apps/api` import rejected) | `err(kind, "unavailable", message)` |
 | API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
 | App stopped while the provider was still resolving | `err(kind, "unavailable", "stopped during resolution")` |
-| Method-time throw on Tauri desktop (icon/menu creation, ACL "not allowed" — ambiguous, D-004) | `err("tauri", "error", message)` |
+| The status-item image cannot be loaded (`tray.icon` file missing, or no default window icon) | `err("tauri", "unavailable", message)` — the message names `tray.icon` |
+| Method-time throw on Tauri desktop (menu creation, ACL "not allowed" — ambiguous, D-004) | `err("tauri", "error", message)` |
 
 `tray` never produces `"denied"` — there is no permission surface, and thrown ACL errors map to
 `"error"`. Every caught error is also logged via `ctx.log.error` with a
@@ -91,15 +92,39 @@ type TrayMenuItem = {
 type TrayConfig = {
   /** OS-level tray identity — lets the native shell distinguish/replace this app's tray. Default: "moku-system". */
   id: string;
+  /** Status-item image. Omit to use the app's default window icon. */
+  icon?: string;
 };
 ```
 
-An empty/whitespace string throws at `onInit`:
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `id` | `string` | `"moku-system"` | OS-level tray identity. Non-empty, validated at `onInit`. |
+| `icon` | `string` (optional) | the app's default window icon | Image for the status item. Use a path the app process can actually read. |
+
+An empty/whitespace `id` throws at `onInit`:
 
 ```
 [system] tray.id must be a non-empty string.
   Provide an id in pluginConfigs.
 ```
+
+### Why the default icon is the app's window icon, not a path
+
+`TrayIcon.new({ icon })` accepts a path string, raw bytes, or an `Image`. A **path string is
+resolved by the Rust side against the process working directory**, which a bundled app does not
+control (launched from Finder it is `/`), so a relative path such as `icons/icon.png` — the entry
+an `@moku-labs/native` app lists under `bundle.icon` — is not something this framework can rely on.
+On macOS a status item created with no icon at all is invisible.
+
+So when `tray.icon` is omitted, the provider asks the shell for the icon the app was packaged with,
+via `defaultWindowIcon()` from `@tauri-apps/api/app` (an `Image` resource, no path guessing), and
+passes it to `TrayIcon.new`. Set `tray.icon` only when the status item needs a *different* image
+from the app icon — and then give it an absolute path, or a path relative to the working directory
+you launch with during development.
+
+Either way the Tauri app needs the `image-png` (or `image-ico`) Cargo feature next to `tray-icon`;
+the `@moku-labs/native` packager emits both.
 
 ## Events
 
@@ -111,8 +136,9 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 |--------|---------------|----------------------------|-----|
 | Backing API | `@tauri-apps/api/tray` + `@tauri-apps/api/menu` (lazy imports) | none | none |
 | All methods | real OS tray | `err("tauri", "unsupported")` | `err("web", "unsupported")` |
-| Icon lifecycle | created lazily on first mutating call; `destroy()`/`dispose()` remove it idempotently | n/a | n/a |
-| `dispose()` (at `app.stop()`) | destroys the cached OS icon if present | no-op | no-op |
+| Icon lifecycle | created lazily on first mutating call, with `tray.icon` or the default window icon; `destroy()`/`dispose()` remove it idempotently | n/a | n/a |
+| Menu lifecycle | exactly one `Menu` alive at a time: `setMenu` closes the menu it replaced *after* the swap, and closes a menu that failed to attach | n/a | n/a |
+| `dispose()` (at `app.stop()`) | destroys the cached OS icon and closes the attached menu | no-op | no-op |
 
 ## Integration notes
 
@@ -121,8 +147,12 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 - **Packages:** `@tauri-apps/api` is an *optional* peerDependency, reached only from
   `providers/tauri.ts`, which is itself only loaded by a dynamic `import()` on the desktop
   branch — pure-web bundles never include it and never have to resolve the specifier.
-- **Icon paths** (`setIcon`) are resolved by the native shell — bundling/locating the icon asset
-  is the `@moku-labs/native` packager's contract, not this framework's.
+- **Icon paths** (`setIcon`, `tray.icon`) are read by the native shell relative to the process
+  working directory — bundling/locating the icon asset is the `@moku-labs/native` packager's
+  contract, not this framework's. The default needs no path at all (see Configuration).
+- **Menus are Rust-side resources.** Every `Menu.new()` allocates one, plus a Channel per item with
+  an `action`. The provider keeps a single menu alive and closes the replaced one on each
+  `setMenu`, so a periodically refreshed menu does not accumulate handles.
 - **`app.stop()` cleans up:** the teardown registry awaits the provider's `dispose()`, so a tray
   icon created during the session is removed on orderly shutdown.
 - **Testing:** the web branch needs no mocks (`forceKind: "web"`). Exercising the desktop branch

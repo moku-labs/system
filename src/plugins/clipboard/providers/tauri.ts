@@ -74,7 +74,9 @@ export async function createTauriClipboardProvider(log: LogApi): Promise<Clipboa
         await writeText(text);
         return ok(undefined, PROVIDER);
       } catch (error) {
-        log.error("clipboard:tauri-write-failed", { text }, toError(error));
+        // Only the length — clipboard text is user data (passwords, tokens) and never
+        // belongs in a log sink.
+        log.error("clipboard:tauri-write-failed", { length: text.length }, toError(error));
         return mapThrownToResult(PROVIDER, error);
       }
     },

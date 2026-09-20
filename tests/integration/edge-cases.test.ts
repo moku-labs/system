@@ -97,7 +97,7 @@ describe("framework: edge cases (integration)", () => {
   describe("invalid config is rejected at createApp() (the kernel runs onInit synchronously)", () => {
     it("store { name: '' } throws a TypeError with the kernel message format", () => {
       expect(buildEmptyStoreNameApp).toThrow(TypeError);
-      expect(buildEmptyStoreNameApp).toThrow("[system] store.name must be a non-empty string.");
+      expect(buildEmptyStoreNameApp).toThrow("[system] store.name must be a file-safe namespace");
     });
 
     it("deepLink { schemes: ['Bad Scheme!'] } throws a TypeError naming the offending entry", () => {

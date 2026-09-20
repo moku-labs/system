@@ -20,7 +20,7 @@ import type { StoreProvider } from "./providers/types";
  * ```
  */
 export type StoreConfig = {
-  /** Namespace for persisted data. Validated non-empty at onInit. Default: "moku-system". */
+  /** Namespace for persisted data. File-safe, validated at onInit. Default: "moku-system". */
   name: string;
 };
 

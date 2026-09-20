@@ -16,8 +16,11 @@ Selection is **two-way**, branching once on `ctx.runtime.kind`:
     `unsupportedProvider()` stand-in — every method resolves `err("web", "unsupported")`.
   - `navigator.clipboard` present but a specific method missing (e.g. Firefox lacking `readText`) →
     that method alone resolves `err("web", "unsupported")`; the other method still works.
-  - A thrown `DOMException` named `"NotAllowedError"` — the one unambiguous web-side "denied" signal
-    — maps to `err("web", "denied", message)`. Any other throw maps to `"error"`.
+  - A rejection whose `name` is `"NotAllowedError"` — the one unambiguous web-side "denied" signal
+    — maps to `err("web", "denied", message)`. Any other throw maps to `"error"`. The check is a
+    duck-type on `.name`, not `instanceof DOMException`: this package compiles without the DOM lib,
+    and a webview that never populated the `DOMException` global still rejects with a
+    `name`-carrying object.
 
 Both providers satisfy the same structural `ClipboardProvider` interface (`providers/types.ts`), so
 island/consumer code calling `app.clipboard.*` behaves identically regardless of which shell it runs in.
@@ -68,7 +71,7 @@ Both methods are mounted at `app.clipboard` and return `Promise<SystemResult<...
 |-----------|--------|
 | Web: `navigator`/`navigator.clipboard` absent (SSR, insecure context) — both methods | `err("web", "unsupported")` |
 | Web: `navigator.clipboard` present but the specific method missing (e.g. Firefox `readText`) | `err("web", "unsupported")` for that method only |
-| Web: thrown `DOMException` named `"NotAllowedError"` (permission refused / no user activation) | `err("web", "denied", message)` — **web-only mapping** |
+| Web: rejection whose `name` is `"NotAllowedError"` (permission refused / no user activation) | `err("web", "denied", message)` — **web-only mapping**, duck-typed on `.name` |
 | Web: any other throw | `err("web", "error", message)` |
 | Tauri: ANY method-time throw (incl. ACL "not allowed") | `err("tauri", "error", message)` — never `"denied"` (D-004) |
 | Provider resolution failed (`@tauri-apps/plugin-clipboard-manager` import rejected) | `err(kind, "unavailable", message)` |
@@ -78,6 +81,9 @@ Both methods are mounted at `app.clipboard` and return `Promise<SystemResult<...
 Non-denied errors are also logged via `ctx.log.error` with a
 `clipboard:{web|tauri}-{read|write}-failed` key (`NotAllowedError` is an expected user decision,
 not logged as an error).
+
+**Log hygiene:** clipboard text is user data — passwords, tokens, private notes — so it is never
+written to a log sink. A failed write logs `{ length }` only; a failed read logs no payload at all.
 
 ## Configuration
 
@@ -94,7 +100,7 @@ None — `clipboard` is pure request/response (`readText`/`writeText` via `app.c
 |--------|-------|-----|
 | Backing API | `@tauri-apps/plugin-clipboard-manager` (lazy import) | `navigator.clipboard` |
 | Availability probe | none (import failure → `"unavailable"`) | factory-time feature probe + per-method presence check |
-| `"denied"` | never (all throws → `"error"`, D-004) | only from `NotAllowedError` DOMException |
+| `"denied"` | never (all throws → `"error"`, D-004) | only from a rejection named `NotAllowedError` |
 | User-gesture requirement | none (native ACL governs access) | `readText` typically requires user activation; browsers may show a paste prompt |
 | `dispose()` | no-op | no-op |
 

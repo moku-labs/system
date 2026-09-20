@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// force-testing rule: forcing kind "tauri" is paired with vi.mock of both
-// @tauri-apps/api/tray and @tauri-apps/api/menu, so provider construction never
-// reaches a real IPC call even when the desktop branch is selected below.
-const { fakeTrayIcon, mockTrayIconNew, mockMenuNew } = vi.hoisted(() => {
+// force-testing rule: forcing kind "tauri" is paired with vi.mock of
+// @tauri-apps/api/tray, /menu and /app, so provider construction never reaches a real
+// IPC call even when the desktop branch is selected below.
+const { fakeTrayIcon, mockTrayIconNew, mockMenuNew, mockDefaultWindowIcon } = vi.hoisted(() => {
   const fakeTrayIcon = {
     setIcon: vi.fn(async () => undefined),
     setMenu: vi.fn(async () => undefined),
@@ -11,12 +11,14 @@ const { fakeTrayIcon, mockTrayIconNew, mockMenuNew } = vi.hoisted(() => {
     close: vi.fn(async () => undefined)
   };
   const mockTrayIconNew = vi.fn(async () => fakeTrayIcon);
-  const mockMenuNew = vi.fn(async () => ({}));
-  return { fakeTrayIcon, mockTrayIconNew, mockMenuNew };
+  const mockMenuNew = vi.fn(async () => ({ close: vi.fn(async () => undefined) }));
+  const mockDefaultWindowIcon = vi.fn(async () => ({ rid: 1 }));
+  return { fakeTrayIcon, mockTrayIconNew, mockMenuNew, mockDefaultWindowIcon };
 });
 
 vi.mock("@tauri-apps/api/tray", () => ({ TrayIcon: { new: mockTrayIconNew } }));
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: mockMenuNew } }));
+vi.mock("@tauri-apps/api/app", () => ({ defaultWindowIcon: mockDefaultWindowIcon }));
 
 import type { RuntimePlatform, SystemResult } from "../../../runtime/result";
 import { loadTrayProvider } from "../../providers/index";
@@ -91,6 +93,6 @@ describe("loadTrayProvider — three-way selection", () => {
     const result = await provider.setMenu([{ id: "quit", text: "Quit" }]);
 
     expect(result).toEqual({ ok: true, value: undefined, provider: "tauri" });
-    expect(mockTrayIconNew).toHaveBeenCalledWith({ id: "test-tray" });
+    expect(mockTrayIconNew).toHaveBeenCalledWith({ id: "test-tray", icon: { rid: 1 } });
   });
 });

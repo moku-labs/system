@@ -28,6 +28,23 @@ function toError(thrown: unknown): Error {
 }
 
 /**
+ * Whether the webview exposes a `Notification` constructor. The plugin's
+ * `sendNotification` is a synchronous void call that does `new window.Notification(...)`
+ * under the hood, so its absence is a capability gap ("unavailable"), not a caller
+ * error — probing it keeps `show()` from reporting an opaque TypeError.
+ *
+ * @returns {boolean} True when `window.Notification` can be constructed.
+ * @example
+ * ```ts
+ * if (!hasNotificationConstructor()) return err("tauri", "unavailable", "...");
+ * ```
+ */
+function hasNotificationConstructor(): boolean {
+  const scope = globalThis as { window?: { Notification?: unknown } };
+  return typeof scope.window?.Notification === "function";
+}
+
+/**
  * Create the Tauri notification provider. Factory-time throws propagate (folded to
  * "unavailable" by startResolution); method-time throws map to "error" — never "denied"
  * (D-004). "denied" is produced only from the plugin's own returned permission signals.
@@ -44,9 +61,30 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
     "@tauri-apps/plugin-notification"
   );
 
+  // Granted state is an IPC round-trip per read; show() would pay it on every call.
+  // Cached after the first successful read, and refreshed by BOTH permission methods —
+  // a throw is never cached, so a transient IPC failure cannot pin the state.
+  let grantedCache: boolean | undefined;
+
+  /**
+   * Read the granted state, reusing the cached value once it is known.
+   *
+   * @returns {Promise<boolean>} Whether notification permission is granted.
+   * @example
+   * ```ts
+   * if (!(await readGranted())) return err(PROVIDER, "denied", "...");
+   * ```
+   */
+  async function readGranted(): Promise<boolean> {
+    grantedCache ??= await isPermissionGranted();
+    return grantedCache;
+  }
+
   return {
     /**
-     * Whether notification permission is currently granted.
+     * Whether notification permission is currently granted. Always reads through to the
+     * plugin and refreshes the cache — this is the caller's way to pick up a permission
+     * the user changed in OS settings while the app was running.
      *
      * @returns {Promise<SystemResult<boolean>>} Granted state.
      * @example
@@ -57,6 +95,7 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
     isPermissionGranted: async (): Promise<SystemResult<boolean>> => {
       try {
         const granted = await isPermissionGranted();
+        grantedCache = granted;
         return ok(granted, PROVIDER);
       } catch (error) {
         log.error("notify:tauri-is-permission-granted-failed", undefined, toError(error));
@@ -68,6 +107,7 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
      * Prompt the user for notification permission. Returns ok(false) for any non-granted
      * returned signal ("denied", "default", …) — that mapping is allowed because the value
      * is a returned permission state, never a thrown ambiguous error (D-004 covers throws only).
+     * The prompt's answer replaces the cached granted state.
      *
      * @returns {Promise<SystemResult<boolean>>} Granted after the prompt.
      * @example
@@ -78,7 +118,8 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
     requestPermission: async (): Promise<SystemResult<boolean>> => {
       try {
         const permission = await requestPermission();
-        return ok(permission === "granted", PROVIDER);
+        grantedCache = permission === "granted";
+        return ok(grantedCache, PROVIDER);
       } catch (error) {
         log.error("notify:tauri-request-permission-failed", undefined, toError(error));
         return mapThrownToResult(PROVIDER, error);
@@ -86,8 +127,10 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
     },
 
     /**
-     * Show a notification. Checks isPermissionGranted() itself — never calls
-     * requestPermission() — so this method can never trigger the OS prompt.
+     * Show a notification. Checks the granted state itself — never calls
+     * requestPermission() — so this method can never trigger the OS prompt. The
+     * synchronous `sendNotification` runs inside the try/catch, so its failure is
+     * observed and returned instead of escaping as an unhandled throw.
      *
      * @param {NotifyOptions} options - Notification content.
      * @returns {Promise<SystemResult<void>>} ok when displayed.
@@ -98,9 +141,12 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
      */
     show: async (options: NotifyOptions): Promise<SystemResult<void>> => {
       try {
-        const granted = await isPermissionGranted();
+        const granted = await readGranted();
         if (!granted) {
           return err(PROVIDER, "denied", "notification permission not granted");
+        }
+        if (!hasNotificationConstructor()) {
+          return err(PROVIDER, "unavailable", "window.Notification is unavailable in this webview");
         }
         sendNotification(options);
         return ok(undefined, PROVIDER);

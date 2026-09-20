@@ -74,6 +74,7 @@ type NotifyOptions = {
 | Situation | Result |
 |-----------|--------|
 | Web: `Notification` global absent (SSR, insecure context, old browser) — every method | `err("web", "unsupported")` |
+| Tauri: `window.Notification` absent inside the shell — `show()` only | `err("tauri", "unavailable", "window.Notification is unavailable in this webview")` |
 | `show()` while permission is not granted (either provider) | `err(kind, "denied", "notification permission not granted")` — no prompt fires |
 | `requestPermission()` prompt answered with denied/dismissed | `ok(false)` — a **returned** permission value, deliberately not an error |
 | Provider resolution failed (`@tauri-apps/plugin-notification` import rejected) | `err(kind, "unavailable", message)` |
@@ -84,6 +85,14 @@ type NotifyOptions = {
 `"denied"` is produced only from the providers' own **returned** permission signals
 (`Notification.permission` / Tauri `isPermissionGranted()`), never guessed from a throw. Every
 caught error is also logged via `ctx.log.error` with a `notify:{web|tauri}-{method}-failed` key.
+
+**Permission caching (Tauri).** Each `isPermissionGranted()` plugin call is an IPC round-trip, so
+`show()` would pay one per notification. The Tauri provider caches the granted state after the
+first successful read; `requestPermission()` replaces it with the prompt's answer, and
+`isPermissionGranted()` always reads through and refreshes it. A thrown read is never cached. If
+the user changes the permission in OS settings while the app runs, call
+`app.notify.isPermissionGranted()` to pick the new state up. The web provider needs no cache —
+`Notification.permission` is a synchronous property.
 
 ## Configuration
 
@@ -101,9 +110,9 @@ None — `notify` is pure request/response (`isPermissionGranted`/`requestPermis
 |--------|-------|-----|
 | Backing API | `@tauri-apps/plugin-notification` (lazy import) | global `Notification` constructor |
 | Availability probe | none (import failure → `"unavailable"`) | factory-time feature probe; absent global → all methods `"unsupported"` |
-| Permission read | `isPermissionGranted()` plugin call | `Notification.permission === "granted"` |
-| Prompt | `requestPermission()` plugin call (returned value mapped to `ok(boolean)`) | `Notification.requestPermission()` (returned value mapped to `ok(boolean)`) |
-| `show()` guard | awaits `isPermissionGranted()` before `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
+| Permission read | `isPermissionGranted()` plugin call, cached after the first read | `Notification.permission === "granted"` (a synchronous property read) |
+| Prompt | `requestPermission()` plugin call (returned value mapped to `ok(boolean)`, and it refreshes the cache) | `Notification.requestPermission()` (returned value mapped to `ok(boolean)`) |
+| `show()` guard | the cached granted state, then a `window.Notification` presence probe, then `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
 | `dispose()` | no-op | no-op |
 
 ## Integration notes
