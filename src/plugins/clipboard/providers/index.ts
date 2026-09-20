@@ -5,6 +5,7 @@
  * `import()`, so the `@tauri-apps/plugin-clipboard-manager` specifier stays in a
  * code-split chunk a pure-web bundle never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { ClipboardContext } from "../types";
 import type { ClipboardProvider } from "./types";
 import { createWebClipboardProvider } from "./web";
@@ -22,10 +23,10 @@ import { createWebClipboardProvider } from "./web";
  */
 export function loadClipboardProvider(ctx: ClipboardContext): () => Promise<ClipboardProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return async () => {
+    return requirePeer("clipboard-manager", "@tauri-apps/plugin-clipboard-manager", async () => {
       const { createTauriClipboardProvider } = await import("./tauri");
       return createTauriClipboardProvider(ctx.log);
-    };
+    });
   }
   return () => createWebClipboardProvider(ctx.log);
 }

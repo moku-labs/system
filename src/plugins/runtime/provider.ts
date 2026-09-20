@@ -7,8 +7,20 @@
  * so it is a phase-legitimate per-app-instance key (D-009).
  */
 
+import type { LogApi } from "@moku-labs/common";
+
 import type { RuntimeKind, SystemErr as SystemError } from "./result";
 import { err, mapThrownToResult } from "./result";
+
+/** How long stopResolution waits for an in-flight resolution before it stops waiting. */
+const STOP_TIMEOUT_MS = 5000;
+
+/**
+ * Rejection texts a bundler or runtime produces when a module specifier cannot be
+ * resolved at all — as opposed to a fault raised by a module that did load.
+ */
+const MISSING_MODULE_PATTERN =
+  /cannot find (?:module|package)|module not found|failed to (?:fetch|load|resolve) (?:dynamically imported )?module|failed to resolve (?:import|module specifier)|importing a module script failed/i;
 
 /** Every capability provider must expose teardown (plan-checker F3). */
 export type CapabilityProvider = { dispose: () => Promise<void> };
@@ -32,6 +44,12 @@ type TeardownEntry = {
    * result). stopResolution awaits it so teardown covers a resolution still in flight.
    */
   settled: Promise<ResolvedProvider<CapabilityProvider>> | null;
+  /**
+   * The capability's logger, captured at startResolution. onStop's TeardownContext is
+   * `{ global }` only (spec/06 §3), so teardown has no ctx.log of its own — and family
+   * convention MC2 forbids reaching for console instead.
+   */
+  log: LogApi;
 };
 
 /**
@@ -68,9 +86,10 @@ function getRegistry(appGlobal: object): Map<string, TeardownEntry> {
  *
  * @param {string} capability - Plugin name (registry key within the app).
  * @param {RuntimeKind} kind - Selected provider kind (for failure results).
- * @param {object} ctx - onStart context slice: { global, state }.
+ * @param {object} ctx - onStart context slice: { global, state, log }.
  * @param {object} ctx.global - Frozen global config (per-app registry key).
  * @param {object} ctx.state - The capability's resolution slot.
+ * @param {LogApi} ctx.log - The capability's logger, kept for teardown (MC2).
  * @param {() => Promise<P>} load - Async provider factory; selection happens inside it.
  * @example
  * ```ts
@@ -80,7 +99,7 @@ function getRegistry(appGlobal: object): Map<string, TeardownEntry> {
 export function startResolution<P extends CapabilityProvider>(
   capability: string,
   kind: RuntimeKind,
-  ctx: { readonly global: object; state: ResolutionState<P> },
+  ctx: { readonly global: object; state: ResolutionState<P>; readonly log: LogApi },
   load: () => Promise<P>
 ): void {
   const registry = getRegistry(ctx.global);
@@ -89,7 +108,8 @@ export function startResolution<P extends CapabilityProvider>(
     // eslint-disable-next-line unicorn/no-null -- dispose is null until the provider resolves (TeardownEntry contract)
     dispose: null,
     // eslint-disable-next-line unicorn/no-null -- settled is null until the chain below is built (TeardownEntry contract)
-    settled: null
+    settled: null,
+    log: ctx.log
   };
   registry.set(capability, entry);
 
@@ -114,15 +134,47 @@ export function startResolution<P extends CapabilityProvider>(
 }
 
 /**
+ * Wait for a resolution to settle, but not forever.
+ *
+ * @param {Promise<unknown> | null} settled - The folded resolution chain; null when none started.
+ * @param {number} timeoutMs - How long to wait before giving up.
+ * @returns {Promise<boolean>} True when the resolution settled in time.
+ * @example
+ * ```ts
+ * if (!(await settleWithin(entry.settled, 5000))) log.warn("…");
+ * ```
+ */
+async function settleWithin(settled: Promise<unknown> | null, timeoutMs: number): Promise<boolean> {
+  if (settled === null) {
+    return true;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([settled.then(() => true), expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Teardown from a capability's onStop (TeardownContext — { global } only).
- * Flips the stopped sentinel, awaits an in-flight resolution (so a late-arriving
- * provider is disposed before app.stop() resolves — its load() rejection is already
- * folded into a failure result, never rethrown here), then awaits the resolved
- * provider's dispose().
+ * Flips the stopped sentinel, waits (bounded) for an in-flight resolution so a
+ * late-arriving provider is disposed before app.stop() resolves — its load() rejection
+ * is already folded into a failure result, never rethrown here — then awaits the
+ * resolved provider's dispose().
+ *
+ * The wait is bounded because a dynamic import that never settles would otherwise hang
+ * app.stop() forever. On timeout the capability is logged at warn and teardown moves on;
+ * the stopped sentinel outlives this call, so a provider arriving later still disposes
+ * itself instead of installing into a stopped app.
  *
  * @param {string} capability - Plugin name used at startResolution.
  * @param {object} ctx - Teardown context: { global }.
  * @param {object} ctx.global - Frozen global config (per-app registry key).
+ * @param {number} [timeoutMs] - How long to wait for an in-flight resolution. Default 5000.
  * @returns A promise that resolves once teardown completes.
  * @example
  * ```ts
@@ -131,7 +183,8 @@ export function startResolution<P extends CapabilityProvider>(
  */
 export async function stopResolution(
   capability: string,
-  ctx: { readonly global: object }
+  ctx: { readonly global: object },
+  timeoutMs: number = STOP_TIMEOUT_MS
 ): Promise<void> {
   const registry = registries.get(ctx.global);
   const entry = registry?.get(capability);
@@ -141,9 +194,79 @@ export async function stopResolution(
   // Set before awaiting: the sentinel is what makes a resolution finishing after this
   // point dispose its provider instead of installing it.
   entry.stopped = true;
-  await entry.settled;
+
+  if (!(await settleWithin(entry.settled, timeoutMs))) {
+    entry.log.warn("runtime:stop-resolution-timeout", { capability, timeoutMs });
+  }
+
   await entry.dispose?.();
   registry?.delete(capability);
+}
+
+/**
+ * Whether a rejection means the module specifier could not be resolved at all, rather
+ * than the loaded module itself failing. Bundlers and module runners usually re-wrap the
+ * loader's error in one of their own, so the `cause` chain is walked (bounded) as well.
+ *
+ * @param {unknown} thrown - Whatever the dynamic import rejected with.
+ * @param {number} [depth] - Remaining `cause` hops to inspect. Default 3.
+ * @returns {boolean} True for a module-resolution failure.
+ * @example
+ * ```ts
+ * if (isMissingModuleError(error)) reportMissingPeer();
+ * ```
+ */
+function isMissingModuleError(thrown: unknown, depth = 3): boolean {
+  if (typeof thrown === "object" && thrown !== null) {
+    if ("code" in thrown && thrown.code === "ERR_MODULE_NOT_FOUND") {
+      return true;
+    }
+    if (depth > 0 && "cause" in thrown && isMissingModuleError(thrown.cause, depth - 1)) {
+      return true;
+    }
+  }
+  return MISSING_MODULE_PATTERN.test(thrown instanceof Error ? thrown.message : String(thrown));
+}
+
+/**
+ * Wrap a provider load closure so a missing optional `@tauri-apps/*` peer fails with a
+ * message that NAMES the package and says how to get it. Without this the app sees a
+ * raw bundler string ("Failed to fetch dynamically imported module …") folded into
+ * "unavailable", which says nothing about which install is missing. Anything that is
+ * not a module-resolution failure — a fault inside the provider itself — propagates
+ * untouched.
+ *
+ * @param {string} nativeName - The capability's `@moku-labs/native` `config.system` entry
+ *   name, which is the Tauri plugin name and not always this framework's plugin name
+ *   (notify → `notification`, clipboard → `clipboard-manager`).
+ * @param {string} peer - The npm package this capability's Tauri provider needs.
+ * @param {() => Promise<P>} load - The load closure to wrap.
+ * @returns {() => Promise<P>} The wrapped load closure.
+ * @example
+ * ```ts
+ * return requirePeer("store", "@tauri-apps/plugin-store", async () => {
+ *   const { createTauriStoreProvider } = await import("./tauri");
+ *   return createTauriStoreProvider(ctx.config, ctx.log);
+ * });
+ * ```
+ */
+export function requirePeer<P>(
+  nativeName: string,
+  peer: string,
+  load: () => Promise<P>
+): () => Promise<P> {
+  return async (): Promise<P> => {
+    try {
+      return await load();
+    } catch (error) {
+      if (!isMissingModuleError(error)) {
+        throw error;
+      }
+      throw new Error(
+        `${peer} is not installed. Add it to the app, or list "${nativeName}" in @moku-labs/native config.system.`
+      );
+    }
+  };
 }
 
 /**

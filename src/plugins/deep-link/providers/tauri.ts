@@ -2,14 +2,15 @@
  * @file deep-link Tauri provider — `@tauri-apps/plugin-deep-link` glue. The package is
  * reached ONLY via `await import("@tauri-apps/plugin-deep-link")` inside the factory
  * body (stays a live lazy import in dist). Registers onOpenUrl onto the onUrl channel;
- * dispose unregisters the OS listener. The provider does NOT dedupe — the OS may replay
+ * dispose unregisters the OS listener once and is final — afterwards getCurrent()
+ * answers err("unavailable", "app stopped") instead of reaching the plugin again. The provider does NOT dedupe — the OS may replay
  * the launch URL onto the fresh listener, and it may do so BEFORE the app ever calls
  * getCurrent(), so the symmetric plugin-layer handover (state.handedOver, see api.ts)
  * is what makes each launch URL reach the app exactly once.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
-import { mapThrownToResult, ok } from "../../runtime/result";
+import { err, mapThrownToResult, ok } from "../../runtime/result";
 import type { DeepLinkConfig } from "../types";
 import type { DeepLinkProvider } from "./types";
 
@@ -60,6 +61,11 @@ export async function createTauriDeepLinkProvider(
   // is called.
   let extrasForwarded = false;
 
+  // dispose() drops the OS listener registration at app.stop(). A call arriving after
+  // that must not reach the plugin again — forwarding a launch URL into a stopped app's
+  // delivery channel is exactly the leak teardown just closed.
+  let disposed = false;
+
   return {
     /**
      * The URL the app was launched with (first element of the plugin's URL list, or
@@ -73,6 +79,9 @@ export async function createTauriDeepLinkProvider(
      * ```
      */
     getCurrent: async (): Promise<SystemResult<string | null>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         const urls = await getCurrent();
         if (!extrasForwarded && urls !== null && urls.length > 1) {
@@ -90,7 +99,9 @@ export async function createTauriDeepLinkProvider(
     },
 
     /**
-     * Unregisters the OS onOpenUrl listener.
+     * Unregisters the OS onOpenUrl listener. Idempotent, and final: `getCurrent()` calls
+     * arriving afterwards report `err("tauri", "unavailable", "app stopped")` instead of
+     * forwarding launch URLs into a stopped app.
      *
      * @returns {Promise<void>} Resolves once teardown completes.
      * @example
@@ -99,6 +110,10 @@ export async function createTauriDeepLinkProvider(
      * ```
      */
     dispose: (): Promise<void> => {
+      if (disposed) {
+        return Promise.resolve();
+      }
+      disposed = true;
       unlisten();
       return Promise.resolve();
     }

@@ -472,6 +472,32 @@ describe("createTauriTrayProvider", () => {
     expect(log.error).toHaveBeenCalledTimes(1);
   });
 
+  it("answers every method with 'app stopped' once disposed instead of recreating the status item", async () => {
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+    await provider.dispose();
+    mockTrayIconNew.mockClear();
+    mockMenuNew.mockClear();
+
+    const stopped = { ok: false, provider: "tauri", reason: "unavailable", message: "app stopped" };
+    expect(await provider.setMenu([{ id: "quit", text: "Quit" }])).toEqual(stopped);
+    expect(await provider.setTooltip("hover")).toEqual(stopped);
+    expect(await provider.setIcon("/path/icon.png")).toEqual(stopped);
+    expect(await provider.destroy()).toEqual(stopped);
+
+    expect(mockTrayIconNew).not.toHaveBeenCalled();
+    expect(mockMenuNew).not.toHaveBeenCalled();
+  });
+
+  it("dispose is idempotent — a second call never closes the freed status item twice", async () => {
+    const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+    await provider.setTooltip("hover");
+
+    await provider.dispose();
+    await provider.dispose();
+
+    expect(fakeTrayIcon.close).toHaveBeenCalledTimes(1);
+  });
+
   it("maps a setMenu throw to reason 'error'", async () => {
     mockMenuNew.mockRejectedValueOnce(new Error("menu build failed"));
     const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());

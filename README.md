@@ -103,8 +103,10 @@ type SystemResult<T> = SystemOk<T> | SystemErr;
 |---|---|---|
 | `unsupported` | The capability does not exist here — permanently (tray on web, tray on Tauri iOS/Android, clipboard in an insecure context). | Hide the feature. |
 | `denied` | The user or platform *unambiguously* refused permission (notification permission not granted, clipboard `NotAllowedError`). | Explain, or call `requestPermission()` deliberately. |
-| `unavailable` | The environment can't deliver *right now* — provider failed to resolve, app not started, Safari private-mode storage probe failed. | Retry later or degrade gracefully. |
+| `unavailable` | The environment can't deliver *right now* — provider failed to resolve, app not started (`"app not started — call app.start() first"`), app already stopped (`"app stopped"`), Safari private-mode storage probe failed. | Retry later or degrade gracefully. |
 | `error` | The provider threw during the operation; the raw message is preserved in `message`. | Log it (`ctx.log` already did) and recover. |
+
+After `app.stop()` a provider whose teardown released a native resource (`store`, `tray`, `deepLink`) answers `unavailable` / `"app stopped"` rather than touching a freed handle — an island that outlives the app gets a typed answer, not a crash. `app.stop()` itself waits at most 5 seconds for a provider still resolving, warns, and completes. A missing optional peer is named: `@tauri-apps/plugin-store is not installed. Add it to the app, or list "store" in @moku-labs/native config.system.`
 
 Environmental failure is data; **programmer errors still throw normally** (e.g. an empty `store.name` fails fast at `createApp` with a `TypeError`). Thrown provider errors are never mapped to `denied` — Tauri ACL throws are ambiguous, so `denied` is reserved for unambiguous returned permission signals.
 

@@ -5,6 +5,7 @@
  * `@tauri-apps/plugin-store` specifier stays in a code-split chunk a pure-web bundle
  * never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { StoreContext } from "../types";
 import type { StoreProvider } from "./types";
 import { createWebStoreProvider } from "./web";
@@ -22,10 +23,10 @@ import { createWebStoreProvider } from "./web";
  */
 export function loadStoreProvider(ctx: StoreContext): () => Promise<StoreProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return async () => {
+    return requirePeer("store", "@tauri-apps/plugin-store", async () => {
       const { createTauriStoreProvider } = await import("./tauri");
       return createTauriStoreProvider(ctx.config, ctx.log);
-    };
+    });
   }
   return () => createWebStoreProvider(ctx.config, ctx.log);
 }

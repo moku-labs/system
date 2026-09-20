@@ -11,7 +11,10 @@
  * Every swap (and teardown) runs through one promise queue, so overlapping `setMenu()`
  * calls can never resolve out of order and close the menu the OS is showing. The
  * default window icon is a Rust-side `Image` resource as well — `TrayIcon.new` only
- * reads its rid, so this provider closes the one it asked for.
+ * reads its rid, so this provider closes the one it asked for. `dispose()` is the one
+ * removal that is final: after it every method answers
+ * `err("tauri", "unavailable", "app stopped")` rather than lazily creating a status item
+ * the stopped app would never release.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
@@ -176,6 +179,12 @@ export async function createTauriTrayProvider(
 
   let iconPromise: Promise<TrayIconHandle> | undefined;
   let currentMenu: MenuHandle | undefined;
+
+  // dispose() releases the status item and its menu at app.stop(). A call arriving after
+  // that must not lazily create a NEW OS tray icon nobody will ever destroy — an island
+  // that outlives app.stop() gets the honest typed failure instead. destroy() is a
+  // different thing: it removes the icon and the next call deliberately recreates it.
+  let disposed = false;
 
   /**
    * The image the status item is created with: the configured `tray.icon` when set,
@@ -399,6 +408,9 @@ export async function createTauriTrayProvider(
      * ```
      */
     setMenu: async (items: TrayMenuItem[]): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         await enqueueMenuSwap(async () => {
           const trayIcon = await ensureIcon();
@@ -423,6 +435,9 @@ export async function createTauriTrayProvider(
      * ```
      */
     setTooltip: async (text: string): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         const trayIcon = await ensureIcon();
         await trayIcon.setTooltip(text);
@@ -444,6 +459,9 @@ export async function createTauriTrayProvider(
      * ```
      */
     setIcon: async (iconPath: string): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         const trayIcon = await ensureIcon();
         await trayIcon.setIcon(iconPath);
@@ -455,7 +473,8 @@ export async function createTauriTrayProvider(
     },
 
     /**
-     * Remove the tray icon; next mutating call recreates it. ok even if never created.
+     * Remove the tray icon; next mutating call recreates it. ok even if never created —
+     * unless the provider was disposed, which is the one removal that is final.
      *
      * @returns {Promise<SystemResult<void>>} ok when removed or absent.
      * @example
@@ -464,6 +483,9 @@ export async function createTauriTrayProvider(
      * ```
      */
     destroy: async (): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         await enqueueMenuSwap(destroyIcon);
         return ok(undefined, PROVIDER);
@@ -476,7 +498,9 @@ export async function createTauriTrayProvider(
     /**
      * Teardown — destroys the cached OS icon and its menu if present (idempotent with
      * destroy()). Queued behind any in-flight menu swap, so teardown never races a
-     * swap into leaving a menu open.
+     * swap into leaving a menu open. Final: every method that arrives afterwards
+     * reports `err("tauri", "unavailable", "app stopped")` instead of lazily creating a
+     * status item the stopped app can no longer release.
      *
      * @returns {Promise<void>} Resolves once teardown completes.
      * @example
@@ -484,6 +508,12 @@ export async function createTauriTrayProvider(
      * await provider.dispose();
      * ```
      */
-    dispose: (): Promise<void> => enqueueMenuSwap(destroyIcon)
+    dispose: (): Promise<void> => {
+      if (disposed) {
+        return Promise.resolve();
+      }
+      disposed = true;
+      return enqueueMenuSwap(destroyIcon);
+    }
   };
 }

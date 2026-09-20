@@ -100,6 +100,12 @@ them external:
 
 Calling a method before start() resolves to
 { ok: false, reason: "unavailable", message: "app not started — call app.start() first" }.
+After stop(), a provider that freed a native resource (store, tray, deepLink) resolves to
+{ ok: false, reason: "unavailable", message: "app stopped" }. stop() itself is bounded: it
+waits at most 5000 ms for an in-flight resolution, warns, and moves on.
+A missing optional @tauri-apps/* peer is reported by name:
+'@tauri-apps/plugin-store is not installed. Add it to the app, or list "store" in
+@moku-labs/native config.system.'
 
 ### Per-capability one-liners
 

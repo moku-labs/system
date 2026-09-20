@@ -5,6 +5,7 @@
  * `@tauri-apps/plugin-notification` specifier stays in a code-split chunk a pure-web
  * bundle never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { NotifyContext } from "../types";
 import type { NotifyProvider } from "./types";
 import { createWebNotifyProvider } from "./web";
@@ -22,10 +23,10 @@ import { createWebNotifyProvider } from "./web";
  */
 export function loadNotifyProvider(ctx: NotifyContext): () => Promise<NotifyProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return async () => {
+    return requirePeer("notification", "@tauri-apps/plugin-notification", async () => {
       const { createTauriNotifyProvider } = await import("./tauri");
       return createTauriNotifyProvider(ctx.log);
-    };
+    });
   }
   return () => createWebNotifyProvider(ctx.log);
 }

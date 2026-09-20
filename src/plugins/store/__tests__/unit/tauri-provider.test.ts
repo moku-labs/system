@@ -272,6 +272,39 @@ describe("createTauriStoreProvider", () => {
     expect(log.error).toHaveBeenCalledTimes(1);
   });
 
+  it("answers every method with 'app stopped' once disposed instead of touching the closed store", async () => {
+    const provider = await createTauriStoreProvider({ name: "n" }, createMockLog());
+    await provider.dispose();
+    fakeStore.get.mockClear();
+    fakeStore.set.mockClear();
+    fakeStore.delete.mockClear();
+    fakeStore.keys.mockClear();
+    fakeStore.clear.mockClear();
+
+    const stopped = { ok: false, provider: "tauri", reason: "unavailable", message: "app stopped" };
+    expect(await provider.get("k")).toEqual(stopped);
+    expect(await provider.set("k", "v")).toEqual(stopped);
+    expect(await provider.delete("k")).toEqual(stopped);
+    expect(await provider.keys()).toEqual(stopped);
+    expect(await provider.clear()).toEqual(stopped);
+
+    expect(fakeStore.get).not.toHaveBeenCalled();
+    expect(fakeStore.set).not.toHaveBeenCalled();
+    expect(fakeStore.delete).not.toHaveBeenCalled();
+    expect(fakeStore.keys).not.toHaveBeenCalled();
+    expect(fakeStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("dispose is idempotent — a second call never closes the freed resource twice", async () => {
+    const provider = await createTauriStoreProvider({ name: "n" }, createMockLog());
+
+    await provider.dispose();
+    await provider.dispose();
+
+    expect(fakeStore.close).toHaveBeenCalledTimes(1);
+    expect(fakeStore.save).toHaveBeenCalledTimes(1);
+  });
+
   it("propagates a factory-time (load) throw so it can be folded to 'unavailable' by startResolution", async () => {
     mockLoad.mockRejectedValueOnce(new Error("plugin not registered"));
 

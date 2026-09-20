@@ -5,6 +5,7 @@
  * through a dynamic `import()`, so the `@tauri-apps/plugin-deep-link` specifier stays in
  * a code-split chunk a pure-web bundle never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { DeepLinkContext } from "../types";
 import type { DeepLinkProvider } from "./types";
 import { createWebDeepLinkProvider } from "./web";
@@ -27,10 +28,10 @@ export function loadDeepLinkProvider(
   onUrl: (url: string) => void
 ): () => Promise<DeepLinkProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return async () => {
+    return requirePeer("deep-link", "@tauri-apps/plugin-deep-link", async () => {
       const { createTauriDeepLinkProvider } = await import("./tauri");
       return createTauriDeepLinkProvider(ctx.config, ctx.log, onUrl);
-    };
+    });
   }
   return () => createWebDeepLinkProvider(ctx.config, ctx.log);
 }

@@ -8,6 +8,7 @@
  * shared `unsupportedProvider()` factory (one via `./web`, one inline) — never a
  * hand-written all-unsupported object.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { RuntimePlatform } from "../../runtime/result";
 import { unsupportedProvider } from "../../runtime/result";
 import type { TrayContext } from "../types";
@@ -40,8 +41,8 @@ export function loadTrayProvider(ctx: TrayContext): () => Promise<TrayProvider> 
   if (!DESKTOP_PLATFORMS.has(ctx.runtime.platform)) {
     return () => Promise.resolve(unsupportedProvider("tauri", TRAY_METHODS));
   }
-  return async () => {
+  return requirePeer("tray", "@tauri-apps/api", async () => {
     const { createTauriTrayProvider } = await import("./tauri");
     return createTauriTrayProvider(ctx.config, ctx.log);
-  };
+  });
 }

@@ -138,6 +138,33 @@ describe("createTauriDeepLinkProvider", () => {
     expect(loggedError?.message).toBe("plain string rejection");
   });
 
+  it("answers getCurrent with 'app stopped' once disposed instead of reaching the plugin again", async () => {
+    const onUrl = vi.fn();
+    mockGetCurrent.mockResolvedValue(["myapp://a", "myapp://b"]);
+    const provider = await createTauriDeepLinkProvider({ schemes: [] }, createMockLog(), onUrl);
+    await provider.dispose();
+
+    const result = await provider.getCurrent();
+
+    expect(result).toEqual({
+      ok: false,
+      provider: "tauri",
+      reason: "unavailable",
+      message: "app stopped"
+    });
+    expect(mockGetCurrent).not.toHaveBeenCalled();
+    expect(onUrl).not.toHaveBeenCalled();
+  });
+
+  it("dispose is idempotent — the OS listener is unregistered exactly once", async () => {
+    const provider = await createTauriDeepLinkProvider({ schemes: [] }, createMockLog(), vi.fn());
+
+    await provider.dispose();
+    await provider.dispose();
+
+    expect(mockUnlisten).toHaveBeenCalledTimes(1);
+  });
+
   it("propagates a factory-time (onOpenUrl) throw so it can be folded to 'unavailable' by startResolution", async () => {
     mockOnOpenUrl.mockRejectedValueOnce(new Error("listener registration failed"));
 

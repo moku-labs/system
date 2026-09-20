@@ -118,7 +118,12 @@ None — `store` is pure request/response (`get`/`set`/`delete`/`keys`/`clear` v
 
 `dispose()` never rejects: a failing `save()` still runs the `close()`, and either failure is
 reported through `ctx.log.error` (`store:tauri-dispose-save-failed` /
-`store:tauri-dispose-close-failed`) rather than breaking the teardown chain.
+`store:tauri-dispose-close-failed`) rather than breaking the teardown chain. It is idempotent and
+final: `close()` frees the Rust-side handle, so on Tauri every method arriving after teardown
+answers `err("tauri", "unavailable", "app stopped")` instead of touching the freed resource — an
+island that outlives `app.stop()` gets the honest typed failure. The same rule holds for the other
+two providers whose teardown frees a native resource: `tray` (status item + menu — a call after
+teardown will NOT lazily recreate the icon) and `deep-link` (OS `onOpenUrl` listener).
 
 ## Integration notes
 

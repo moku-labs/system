@@ -441,6 +441,10 @@ notify and clipboard take NO config — they have no pluginConfigs entry.
       unsupported combinations -> unsupportedProvider() stand-in.
     - load() rejections are folded into the promise as reason "unavailable" — start()
       never throws for environmental reasons.
+    - a MISSING optional @tauri-apps/* peer is named in the message instead of a raw
+      bundler string: '@tauri-apps/plugin-store is not installed. Add it to the app,
+      or list "store" in @moku-labs/native config.system.' (the native entry is the
+      Tauri plugin name: notify -> notification, clipboard -> clipboard-manager.)
   await app.<capability>.<method>(...)
     - awaits the resolution slot (awaitProvider), then delegates to the provider.
     - before start(): resolves to { ok: false, reason: "unavailable",
@@ -448,8 +452,15 @@ notify and clipboard take NO config — they have no pluginConfigs entry.
   await app.stop();
     - stopResolution flips a stopped sentinel and awaits the resolved provider's
       dispose() (tray destroys the OS icon; deepLink unregisters the OS listener).
+    - the wait for an in-flight resolution is BOUNDED (5000 ms): a dynamic import that
+      never settles cannot hang app.stop(). On timeout the capability is logged at warn
+      (runtime:stop-resolution-timeout) and teardown moves on.
     - a provider that finishes resolving AFTER stop is disposed immediately and the
-      slot resolves to "unavailable" ("stopped during resolution").
+      slot resolves to "unavailable" ("stopped during resolution") — including one that
+      arrives after the timeout.
+    - after dispose, a provider that freed a native resource (store, tray, deepLink)
+      answers err(provider, "unavailable", "app stopped") on every method instead of
+      touching the freed handle.
     - teardown registries are per-app-instance (keyed by the app's frozen global
       config object) — multiple app instances never share resolution state.
 
