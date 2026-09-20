@@ -66,7 +66,8 @@ describe("loadTrayProvider — three-way selection", () => {
 
   it.each<RuntimePlatform>([
     "ios",
-    "android"
+    "android",
+    "unknown"
   ])("kind 'tauri' + platform '%s' selects the all-unsupported tauri provider (platform-gated)", async platform => {
     const ctx = createCtx({ kind: "tauri", platform });
 
@@ -82,8 +83,7 @@ describe("loadTrayProvider — three-way selection", () => {
   it.each<RuntimePlatform>([
     "macos",
     "windows",
-    "linux",
-    "unknown"
+    "linux"
   ])("kind 'tauri' + platform '%s' selects the real Tauri desktop provider", async platform => {
     const ctx = createCtx({ kind: "tauri", platform });
 

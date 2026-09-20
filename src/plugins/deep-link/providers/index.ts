@@ -1,10 +1,11 @@
 /**
  * @file deep-link providers — resolver. Selection branches once on ctx.runtime.kind
  * inside the returned load closure (D-012); the push channel (onUrl) is wired at
- * factory time, not a method.
+ * factory time, not a method. Only ./web is statically imported: ./tauri is reached
+ * through a dynamic `import()`, so the `@tauri-apps/plugin-deep-link` specifier stays in
+ * a code-split chunk a pure-web bundle never has to resolve.
  */
 import type { DeepLinkContext } from "../types";
-import { createTauriDeepLinkProvider } from "./tauri";
 import type { DeepLinkProvider } from "./types";
 import { createWebDeepLinkProvider } from "./web";
 
@@ -26,7 +27,10 @@ export function loadDeepLinkProvider(
   onUrl: (url: string) => void
 ): () => Promise<DeepLinkProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return () => createTauriDeepLinkProvider(ctx.config, ctx.log, onUrl);
+    return async () => {
+      const { createTauriDeepLinkProvider } = await import("./tauri");
+      return createTauriDeepLinkProvider(ctx.config, ctx.log, onUrl);
+    };
   }
   return () => createWebDeepLinkProvider(ctx.config, ctx.log);
 }

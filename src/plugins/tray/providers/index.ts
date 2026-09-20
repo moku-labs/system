@@ -1,17 +1,26 @@
 /**
  * @file tray providers — resolver. Selection is THREE-WAY (D-012 extended by platform
- * gating): kind "web" → the all-unsupported-by-kind web provider; kind "tauri" with
- * platform "ios"/"android" → the all-unsupported-by-platform-within-kind stand-in;
- * kind "tauri" desktop/unknown → the real Tauri provider. BOTH absence branches route
- * through the shared `unsupportedProvider()` factory (one via `./web`, one inline) —
- * never a hand-written all-unsupported object.
+ * gating): kind "web" → the all-unsupported-by-kind web provider; kind "tauri" on any
+ * platform outside the desktop allowlist → the all-unsupported-by-platform-within-kind
+ * stand-in; kind "tauri" on macos/windows/linux → the real Tauri provider, reached
+ * through a dynamic `import()` so the `@tauri-apps/api` specifiers stay in a code-split
+ * chunk a pure-web bundle never has to resolve. BOTH absence branches route through the
+ * shared `unsupportedProvider()` factory (one via `./web`, one inline) — never a
+ * hand-written all-unsupported object.
  */
+import type { RuntimePlatform } from "../../runtime/result";
 import { unsupportedProvider } from "../../runtime/result";
 import type { TrayContext } from "../types";
-import { createTauriTrayProvider } from "./tauri";
 import type { TrayProvider } from "./types";
 import { TRAY_METHODS } from "./types";
 import { createWebTrayProvider } from "./web";
+
+/**
+ * The platforms that actually have a desktop tray. An ALLOWLIST, not a mobile denylist:
+ * an unrecognized platform ("unknown") must degrade to a typed "unsupported", never fall
+ * into the desktop provider and fail at call time.
+ */
+const DESKTOP_PLATFORMS = new Set<RuntimePlatform>(["macos", "windows", "linux"]);
 
 /**
  * Build the load closure passed to startResolution. Selection branches once on
@@ -28,8 +37,11 @@ export function loadTrayProvider(ctx: TrayContext): () => Promise<TrayProvider> 
   if (ctx.runtime.kind === "web") {
     return () => Promise.resolve(createWebTrayProvider());
   }
-  if (ctx.runtime.platform === "ios" || ctx.runtime.platform === "android") {
+  if (!DESKTOP_PLATFORMS.has(ctx.runtime.platform)) {
     return () => Promise.resolve(unsupportedProvider("tauri", TRAY_METHODS));
   }
-  return () => createTauriTrayProvider(ctx.config, ctx.log);
+  return async () => {
+    const { createTauriTrayProvider } = await import("./tauri");
+    return createTauriTrayProvider(ctx.config, ctx.log);
+  };
 }

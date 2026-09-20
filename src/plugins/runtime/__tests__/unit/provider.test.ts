@@ -13,6 +13,16 @@ function createFakeProvider(id: string, dispose = vi.fn(() => Promise.resolve())
   return { id, dispose };
 }
 
+/**
+ * Test helper — a promise that settles one macrotask later, i.e. strictly after every
+ * pending microtask has drained.
+ */
+function nextMacrotask(): Promise<void> {
+  return new Promise<void>(resolve => {
+    setTimeout(resolve, 0);
+  });
+}
+
 describe("startResolution", () => {
   it("synchronously stores an unawaited promise on state.provider", () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
@@ -52,10 +62,13 @@ describe("startResolution", () => {
         resolveLoad = resolve;
       });
     startResolution("store", "web", { global, state }, load);
-    await stopResolution("store", { global });
+    // stopResolution runs synchronously up to its first await, so the sentinel is set
+    // before the load below completes — and it stays pending until teardown finished.
+    const stopped = stopResolution("store", { global });
 
     const dispose = vi.fn(() => Promise.resolve());
     resolveLoad?.(createFakeProvider("late", dispose));
+    await stopped;
 
     await expect(state.provider).resolves.toEqual({
       ok: false,
@@ -87,6 +100,56 @@ describe("stopResolution", () => {
 
   it("is a no-op when no entry is registered for the capability", async () => {
     await expect(stopResolution("nonexistent", { global: {} })).resolves.toBeUndefined();
+  });
+
+  it("resolves only after an in-flight resolution disposed its late-arriving provider", async () => {
+    const state: ResolutionState<FakeProvider> = { provider: null };
+    const global = {};
+    let resolveLoad: ((provider: FakeProvider) => void) | undefined;
+    startResolution(
+      "store",
+      "web",
+      { global, state },
+      () =>
+        new Promise<FakeProvider>(resolve => {
+          resolveLoad = resolve;
+        })
+    );
+
+    // dispose finishes a macrotask later, so "only after" is an ordering fact here and
+    // not a microtask-scheduling coincidence.
+    const order: string[] = [];
+    const dispose = vi.fn(async (): Promise<void> => {
+      await nextMacrotask();
+      order.push("disposed");
+    });
+    // stopResolution runs synchronously up to its first await, so the stopped sentinel is
+    // already set when the load below completes — the resolution is genuinely in flight.
+    const stopped = stopResolution("store", { global }).then(() => order.push("stopped"));
+    resolveLoad?.(createFakeProvider("late", dispose));
+    await stopped;
+
+    expect(order).toEqual(["disposed", "stopped"]);
+  });
+
+  it("swallows a load() rejection that is still in flight when stop is called", async () => {
+    const state: ResolutionState<FakeProvider> = { provider: null };
+    const global = {};
+    let rejectLoad: ((error: Error) => void) | undefined;
+    startResolution(
+      "store",
+      "web",
+      { global, state },
+      () =>
+        new Promise<FakeProvider>((_resolve, reject) => {
+          rejectLoad = reject;
+        })
+    );
+
+    const stopped = stopResolution("store", { global });
+    rejectLoad?.(new Error("boom"));
+
+    await expect(stopped).resolves.toBeUndefined();
   });
 });
 

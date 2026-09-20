@@ -5,6 +5,7 @@
 
 import type { LogApi } from "@moku-labs/common";
 import type { PluginCtx } from "@moku-labs/core";
+import type { Config } from "../../config";
 import type { ResolutionState } from "../runtime/provider";
 import type { SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
@@ -58,7 +59,7 @@ export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
  * Internal domain context — carries DeepLinkEvents so ctx.emit is strictly typed (spec/15 §6).
  */
 export type DeepLinkContext = PluginCtx<DeepLinkConfig, DeepLinkState, DeepLinkEvents> & {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly runtime: RuntimeApi;
   readonly log: LogApi;
 };

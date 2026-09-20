@@ -1,11 +1,11 @@
 /**
  * @file notify providers — resolver. Selection branches once on ctx.runtime.kind (D-012);
- * construction is delegated to ./tauri and ./web. Both are statically imported (SSR-safe);
- * the lazy boundary that matters is inside tauri.ts's dynamic `@tauri-apps/plugin-notification`
- * import.
+ * construction is delegated to ./tauri and ./web. Only ./web is statically imported:
+ * ./tauri is reached through a dynamic `import()` inside the load closure, so the
+ * `@tauri-apps/plugin-notification` specifier stays in a code-split chunk a pure-web
+ * bundle never has to resolve.
  */
 import type { NotifyContext } from "../types";
-import { createTauriNotifyProvider } from "./tauri";
 import type { NotifyProvider } from "./types";
 import { createWebNotifyProvider } from "./web";
 
@@ -22,7 +22,10 @@ import { createWebNotifyProvider } from "./web";
  */
 export function loadNotifyProvider(ctx: NotifyContext): () => Promise<NotifyProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return () => createTauriNotifyProvider(ctx.log);
+    return async () => {
+      const { createTauriNotifyProvider } = await import("./tauri");
+      return createTauriNotifyProvider(ctx.log);
+    };
   }
   return () => createWebNotifyProvider(ctx.log);
 }

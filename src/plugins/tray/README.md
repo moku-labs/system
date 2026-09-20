@@ -6,9 +6,13 @@ Selection is **three-way**, both absence branches produced by the same shared `u
 factory (`../runtime/result.ts`) so an all-unsupported provider can never be silently hand-written:
 
 - **kind `"web"`** — no browser tray API exists. Every method resolves `err("web", "unsupported")`.
-- **kind `"tauri"` + platform `"ios"`/`"android"`** — Tauri mobile has no tray surface either. Every
-  method resolves `err("tauri", "unsupported")`.
-- **kind `"tauri"` desktop/unknown** — the real `providers/tauri.ts` provider, backed by lazy
+- **kind `"tauri"` outside the desktop allowlist** — `"ios"`, `"android"` and `"unknown"` have no
+  tray surface. Every method resolves `err("tauri", "unsupported")`. Gating is an **allowlist**
+  (`macos`/`windows`/`linux`), not a mobile denylist: an unrecognized platform degrades to a typed
+  absence instead of falling into the desktop provider and failing at call time. An iPad in
+  desktop mode lands here too — `runtime` reports its Macintosh UA with touch points as `"ios"`.
+- **kind `"tauri"` + platform `"macos"`/`"windows"`/`"linux"`** — the real `providers/tauri.ts`
+  provider, reached through a dynamic `import("./tauri")` and backed by lazy
   imports of `@tauri-apps/api/tray` + `@tauri-apps/api/menu`. The OS tray icon is created
   **lazily on the first mutating call** (`setMenu`/`setTooltip`/`setIcon`) — resolution itself
   never touches the OS. `destroy()`/`dispose()` destroy the cached icon idempotently; the next
@@ -71,7 +75,7 @@ type TrayMenuItem = {
 | Situation | Result |
 |-----------|--------|
 | kind `"web"` (any platform) — every method | `err("web", "unsupported")` |
-| kind `"tauri"` + platform `"ios"`/`"android"` — every method | `err("tauri", "unsupported")` |
+| kind `"tauri"` + platform outside `macos`/`windows`/`linux` (`ios`, `android`, `unknown`) — every method | `err("tauri", "unsupported")` |
 | Provider resolution failed (`@tauri-apps/api` import rejected) | `err(kind, "unavailable", message)` |
 | API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
 | App stopped while the provider was still resolving | `err(kind, "unavailable", "stopped during resolution")` |
@@ -103,7 +107,7 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 
 ## Provider behavior differences
 
-| Aspect | Tauri desktop | Tauri mobile (ios/android) | Web |
+| Aspect | Tauri desktop (macos/windows/linux) | Tauri non-desktop (ios/android/unknown) | Web |
 |--------|---------------|----------------------------|-----|
 | Backing API | `@tauri-apps/api/tray` + `@tauri-apps/api/menu` (lazy imports) | none | none |
 | All methods | real OS tray | `err("tauri", "unsupported")` | `err("web", "unsupported")` |
@@ -112,15 +116,16 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 
 ## Integration notes
 
-- **Dependencies:** none declared. `ctx.runtime` (three-way selection, including **platform**
-  gating) and `ctx.log` are core-plugin APIs, always injected — never a `depends` edge.
-- **Packages:** `@tauri-apps/api` is an *optional* peerDependency, reached only via lazy dynamic
-  imports inside the desktop provider factory — pure-web bundles never include it.
+- **Dependencies:** none declared. `ctx.runtime` (three-way selection, including the **platform**
+  allowlist) and `ctx.log` are core-plugin APIs, always injected — never a `depends` edge.
+- **Packages:** `@tauri-apps/api` is an *optional* peerDependency, reached only from
+  `providers/tauri.ts`, which is itself only loaded by a dynamic `import()` on the desktop
+  branch — pure-web bundles never include it and never have to resolve the specifier.
 - **Icon paths** (`setIcon`) are resolved by the native shell — bundling/locating the icon asset
   is the `@moku-labs/native` packager's contract, not this framework's.
 - **`app.stop()` cleans up:** the teardown registry awaits the provider's `dispose()`, so a tray
   icon created during the session is removed on orderly shutdown.
 - **Testing:** the web branch needs no mocks (`forceKind: "web"`). Exercising the desktop branch
   requires `vi.mock("@tauri-apps/api/tray")` + `vi.mock("@tauri-apps/api/menu")` alongside
-  `forceKind: "tauri"` (+ `forcePlatform: "macos"`); the mobile branch only needs
-  `forcePlatform: "ios"`/`"android"` with the same kind mock rule.
+  `forceKind: "tauri"` (+ `forcePlatform: "macos"`); the absent branch only needs
+  `forcePlatform: "ios"`/`"android"`/`"unknown"` with the same kind mock rule.

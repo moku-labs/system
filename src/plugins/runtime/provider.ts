@@ -27,6 +27,11 @@ export type ResolutionState<P extends CapabilityProvider> = {
 type TeardownEntry = {
   stopped: boolean;
   dispose: (() => Promise<void>) | null;
+  /**
+   * The folded resolution chain (never rejects — startResolution catches into a failure
+   * result). stopResolution awaits it so teardown covers a resolution still in flight.
+   */
+  settled: Promise<ResolvedProvider<CapabilityProvider>> | null;
 };
 
 /**
@@ -79,11 +84,16 @@ export function startResolution<P extends CapabilityProvider>(
   load: () => Promise<P>
 ): void {
   const registry = getRegistry(ctx.global);
-  // eslint-disable-next-line unicorn/no-null -- dispose is null until the provider resolves (TeardownEntry contract)
-  const entry: TeardownEntry = { stopped: false, dispose: null };
+  const entry: TeardownEntry = {
+    stopped: false,
+    // eslint-disable-next-line unicorn/no-null -- dispose is null until the provider resolves (TeardownEntry contract)
+    dispose: null,
+    // eslint-disable-next-line unicorn/no-null -- settled is null until the chain below is built (TeardownEntry contract)
+    settled: null
+  };
   registry.set(capability, entry);
 
-  ctx.state.provider = load()
+  const resolution = load()
     .then(async (provider): Promise<ResolvedProvider<P>> => {
       if (entry.stopped) {
         await provider.dispose();
@@ -98,11 +108,17 @@ export function startResolution<P extends CapabilityProvider>(
         failure: mapThrownToResult(kind, error, "unavailable")
       })
     );
+
+  entry.settled = resolution;
+  ctx.state.provider = resolution;
 }
 
 /**
  * Teardown from a capability's onStop (TeardownContext — { global } only).
- * Flips the stopped sentinel and awaits the resolved provider's dispose().
+ * Flips the stopped sentinel, awaits an in-flight resolution (so a late-arriving
+ * provider is disposed before app.stop() resolves — its load() rejection is already
+ * folded into a failure result, never rethrown here), then awaits the resolved
+ * provider's dispose().
  *
  * @param {string} capability - Plugin name used at startResolution.
  * @param {object} ctx - Teardown context: { global }.
@@ -122,7 +138,10 @@ export async function stopResolution(
   if (entry === undefined) {
     return;
   }
+  // Set before awaiting: the sentinel is what makes a resolution finishing after this
+  // point dispose its provider instead of installing it.
   entry.stopped = true;
+  await entry.settled;
   await entry.dispose?.();
   registry?.delete(capability);
 }

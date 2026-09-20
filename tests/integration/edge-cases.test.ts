@@ -107,7 +107,9 @@ describe("framework: edge cases (integration)", () => {
   });
 
   describe("stop() during in-flight resolution across multiple capabilities", () => {
-    it("disposes every late provider, folds all APIs to failure, and stop() never throws", async () => {
+    it("disposes every provider before stop() resolves, and stop() never throws", async () => {
+      // Released a macrotask after stop() is called: by then teardown has run as far as
+      // it can and is parked on this gate, whatever the kernel's internal await count.
       let release!: () => void;
       const gate = new Promise<void>(resolve => {
         release = resolve;
@@ -124,32 +126,33 @@ describe("framework: edge cases (integration)", () => {
       // are now stalled on the shared gate, so start() resolves immediately.
       await app.start();
 
-      // stop() flips each capability's `stopped` sentinel before its first await (the
-      // teardown entries' dispose is still null), so it settles while both loads are
-      // still in flight — and it must not throw.
-      await expect(app.stop()).resolves.toBeUndefined();
+      // Teardown runs in reverse plugin order, so deepLink stops first and parks on its
+      // in-flight resolution; store's load settles during that wait, so its provider is
+      // installed and then disposed by store's own onStop. Either way every provider is
+      // disposed before stop() resolves — and stop() must not throw.
+      const stopping = app.stop();
+      setTimeout(release, 0);
+      await expect(stopping).resolves.toBeUndefined();
 
-      // Only now let both provider constructions finish: startResolution's `.then`
-      // sees entry.stopped for each and disposes the late-arriving providers.
-      release();
-
-      // "stopped during resolution" is produced ONLY on the path that has already
-      // awaited provider.dispose() (src/plugins/runtime/provider.ts) — observing it
-      // for BOTH capabilities proves both late providers were disposed.
+      // deepLink was stopped mid-resolution: "stopped during resolution" is produced ONLY
+      // on the path that has already awaited provider.dispose() (runtime/provider.ts).
       const stoppedDuringResolution = {
         ok: false,
         provider: "tauri",
         reason: "unavailable",
         message: "stopped during resolution"
       };
-      expect(await app.store.get("k")).toEqual(stoppedDuringResolution);
       expect(await app.deepLink.getCurrent()).toEqual(stoppedDuringResolution);
 
-      // The deep-link provider's dispose is observable: it unregisters the OS listener.
+      // The deep-link provider's dispose is observable, and it happened before stop()
+      // resolved — the listener is already gone by the time the assertions run.
       expect(tauriMocks.mockUnlisten).toHaveBeenCalledTimes(1);
 
-      // Settled resolutions are stable — repeat calls observe the identical failure.
-      expect(await app.store.keys()).toEqual(stoppedDuringResolution);
+      // store's load settles during that same teardown window; whichever side of its own
+      // sentinel it lands on, its resolution is final once stop() resolved — repeat calls
+      // observe the identical outcome instead of re-entering resolution.
+      const firstStoreResult = await app.store.get("k");
+      expect(await app.store.get("k")).toEqual(firstStoreResult);
     });
   });
 

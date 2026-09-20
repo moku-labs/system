@@ -3,6 +3,7 @@
  * populates it synchronously via startResolution (spec/02 §State). lastUrl starts null
  * (the dedup guard has nothing to compare against yet); subscribers starts empty.
  */
+import type { Config } from "../../config";
 import type { DeepLinkConfig, DeepLinkState } from "./types";
 
 /**
@@ -19,7 +20,7 @@ import type { DeepLinkConfig, DeepLinkState } from "./types";
  * ```
  */
 export function createDeepLinkState(_ctx: {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly config: Readonly<DeepLinkConfig>;
 }): DeepLinkState {
   return {
