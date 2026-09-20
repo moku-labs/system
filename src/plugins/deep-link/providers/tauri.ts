@@ -3,8 +3,9 @@
  * reached ONLY via `await import("@tauri-apps/plugin-deep-link")` inside the factory
  * body (stays a live lazy import in dist). Registers onOpenUrl onto the onUrl channel;
  * dispose unregisters the OS listener. The provider does NOT dedupe — the OS may replay
- * the launch URL onto the fresh listener, so the plugin-layer guard (state.launchUrl +
- * state.launchReplayDone, see api.ts's createDeliver) is what drops that one replay.
+ * the launch URL onto the fresh listener, and it may do so BEFORE the app ever calls
+ * getCurrent(), so the symmetric plugin-layer handover (state.handedOver, see api.ts)
+ * is what makes each launch URL reach the app exactly once.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";

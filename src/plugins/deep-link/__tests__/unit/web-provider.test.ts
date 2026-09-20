@@ -78,6 +78,51 @@ describe("createWebDeepLinkProvider", () => {
       });
     });
 
+    it.each([
+      ["javascript", "javascript%3Aalert(1)"],
+      ["data", "data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E"],
+      ["vbscript", "vbscript%3AMsgBox(1)"],
+      ["blob", "blob%3Ahttps%3A%2F%2Fexample.com%2Fabcd"],
+      ["file", "file%3A%2F%2F%2Fetc%2Fpasswd"]
+    ])("rejects an attacker-supplied %s: deeplink parameter", async (scheme, raw) => {
+      globalScope.location = { href: `https://example.com/launch?deeplink=${raw}` };
+      const log = createMockLog();
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, log);
+
+      const result = await provider.getCurrent();
+
+      // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — the parameter was rejected
+      expect(result).toEqual({ ok: true, value: null, provider: "web" });
+      expect(log.debug).toHaveBeenCalledWith("deepLink:web-launch-rejected", { scheme });
+    });
+
+    it("rejects a rejected scheme regardless of case and surrounding whitespace", async () => {
+      globalScope.location = {
+        href: "https://example.com/launch?deeplink=%20%0AJaVaScRiPt%3Aalert(1)%20"
+      };
+      const log = createMockLog();
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, log);
+
+      const result = await provider.getCurrent();
+
+      // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — the parameter was rejected
+      expect(result).toEqual({ ok: true, value: null, provider: "web" });
+      expect(log.debug).toHaveBeenCalledWith("deepLink:web-launch-rejected", {
+        scheme: "javascript"
+      });
+    });
+
+    it("trims a surviving deeplink parameter so the scheme allowlist sees the bare URL", async () => {
+      globalScope.location = {
+        href: "https://example.com/launch?deeplink=%20myapp%3A%2F%2Fopen%20"
+      };
+      const provider = await createWebDeepLinkProvider({ schemes: [] }, createMockLog());
+
+      const result = await provider.getCurrent();
+
+      expect(result).toEqual({ ok: true, value: "myapp://open", provider: "web" });
+    });
+
     it("never registers a push channel — the web provider has no onUrl parameter", async () => {
       // createWebDeepLinkProvider's signature intentionally omits an onUrl parameter;
       // this documents that omission (no push deliveries on web in v1).

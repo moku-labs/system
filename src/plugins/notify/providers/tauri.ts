@@ -62,12 +62,30 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
   );
 
   // Granted state is an IPC round-trip per read; show() would pay it on every call.
-  // Cached after the first successful read, and refreshed by BOTH permission methods —
-  // a throw is never cached, so a transient IPC failure cannot pin the state.
-  let grantedCache: boolean | undefined;
+  // ONLY "granted" is cached: permission is granted once and stays granted for the
+  // session, while a not-granted state is exactly what the user flips in OS settings
+  // while the app runs. Caching `false` would pin the app in "denied" forever. A throw
+  // is never cached either, so a transient IPC failure cannot pin the state.
+  let grantedCache: true | undefined;
 
   /**
-   * Read the granted state, reusing the cached value once it is known.
+   * Record a freshly read granted state — `true` is cached, anything else clears the
+   * cache so the next read goes back to the plugin.
+   *
+   * @param {boolean} granted - The granted state just read from the plugin.
+   * @returns {boolean} The same granted state, for direct return.
+   * @example
+   * ```ts
+   * return ok(rememberGranted(await isPermissionGranted()), PROVIDER);
+   * ```
+   */
+  function rememberGranted(granted: boolean): boolean {
+    grantedCache = granted ? true : undefined;
+    return granted;
+  }
+
+  /**
+   * Read the granted state, reusing the cached value only while it says "granted".
    *
    * @returns {Promise<boolean>} Whether notification permission is granted.
    * @example
@@ -76,8 +94,10 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
    * ```
    */
   async function readGranted(): Promise<boolean> {
-    grantedCache ??= await isPermissionGranted();
-    return grantedCache;
+    if (grantedCache === true) {
+      return true;
+    }
+    return rememberGranted(await isPermissionGranted());
   }
 
   return {
@@ -94,9 +114,7 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
      */
     isPermissionGranted: async (): Promise<SystemResult<boolean>> => {
       try {
-        const granted = await isPermissionGranted();
-        grantedCache = granted;
-        return ok(granted, PROVIDER);
+        return ok(rememberGranted(await isPermissionGranted()), PROVIDER);
       } catch (error) {
         log.error("notify:tauri-is-permission-granted-failed", undefined, toError(error));
         return mapThrownToResult(PROVIDER, error);
@@ -107,7 +125,7 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
      * Prompt the user for notification permission. Returns ok(false) for any non-granted
      * returned signal ("denied", "default", …) — that mapping is allowed because the value
      * is a returned permission state, never a thrown ambiguous error (D-004 covers throws only).
-     * The prompt's answer replaces the cached granted state.
+     * The prompt's answer replaces the cached granted state; a non-granted answer clears it.
      *
      * @returns {Promise<SystemResult<boolean>>} Granted after the prompt.
      * @example
@@ -118,8 +136,7 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
     requestPermission: async (): Promise<SystemResult<boolean>> => {
       try {
         const permission = await requestPermission();
-        grantedCache = permission === "granted";
-        return ok(grantedCache, PROVIDER);
+        return ok(rememberGranted(permission === "granted"), PROVIDER);
       } catch (error) {
         log.error("notify:tauri-request-permission-failed", undefined, toError(error));
         return mapThrownToResult(PROVIDER, error);
@@ -128,9 +145,11 @@ export async function createTauriNotifyProvider(log: LogApi): Promise<NotifyProv
 
     /**
      * Show a notification. Checks the granted state itself — never calls
-     * requestPermission() — so this method can never trigger the OS prompt. The
-     * synchronous `sendNotification` runs inside the try/catch, so its failure is
-     * observed and returned instead of escaping as an unhandled throw.
+     * requestPermission() — so this method can never trigger the OS prompt. A
+     * not-granted answer is re-read on every call, so a permission the user grants in
+     * OS settings mid-session is picked up without restarting the app. The synchronous
+     * `sendNotification` runs inside the try/catch, so its failure is observed and
+     * returned instead of escaping as an unhandled throw.
      *
      * @param {NotifyOptions} options - Notification content.
      * @returns {Promise<SystemResult<void>>} ok when displayed.

@@ -11,9 +11,10 @@ const createMockCtx = (overrides?: Partial<DeepLinkContext>): DeepLinkContext =>
     ({
       // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
       provider: null,
-      // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
-      launchUrl: null,
-      launchReplayDone: false,
+      handedOver: new Map(),
+      launchPhaseOpen: true,
+      // eslint-disable-next-line unicorn/no-null -- the deadline is unknown until the first launch-phase URL
+      launchPhaseEndsAt: null,
       subscribers: new Set()
     } satisfies DeepLinkState),
   emit: overrides?.emit ?? vi.fn(),
@@ -54,20 +55,21 @@ describe("createDeliver", () => {
       expect(ctx.emit).toHaveBeenCalledWith("deepLink:open", { url: "myapp://open" });
     });
 
-    it("does not consume the launch-replay guard for a scheme-filtered URL", () => {
+    it("does not touch the handover record for a scheme-filtered URL", () => {
       const ctx = createMockCtx({ config: { schemes: ["myapp"] } });
       const deliver = createDeliver(ctx);
 
       deliver("other://open");
 
-      expect(ctx.state.launchReplayDone).toBe(false);
+      expect(ctx.state.handedOver.size).toBe(0);
+      expect(ctx.state.launchPhaseOpen).toBe(true);
     });
   });
 
-  describe("launch-replay guard — dedup the one-time replay, nothing else", () => {
+  describe("launch handover — dedup the one-time replay, nothing else", () => {
     it("drops the launch URL the first time it arrives (the replay after getCurrent read it)", () => {
       const ctx = createMockCtx();
-      ctx.state.launchUrl = "myapp://open";
+      ctx.state.handedOver.set("myapp://open", "get-current");
       const deliver = createDeliver(ctx);
       const subscriber = vi.fn();
       ctx.state.subscribers.add(subscriber);
@@ -76,7 +78,7 @@ describe("createDeliver", () => {
 
       expect(ctx.emit).not.toHaveBeenCalled();
       expect(subscriber).not.toHaveBeenCalled();
-      expect(ctx.state.launchReplayDone).toBe(true);
+      expect(ctx.state.handedOver.has("myapp://open")).toBe(false);
       expect(ctx.log.debug).toHaveBeenCalledWith("deepLink:launch-replay-dropped", {
         url: "myapp://open"
       });
@@ -84,7 +86,7 @@ describe("createDeliver", () => {
 
     it("delivers the same URL when it arrives again later — only the replay is dropped", () => {
       const ctx = createMockCtx();
-      ctx.state.launchUrl = "myapp://open";
+      ctx.state.handedOver.set("myapp://open", "get-current");
       const deliver = createDeliver(ctx);
       const subscriber = vi.fn();
       ctx.state.subscribers.add(subscriber);
@@ -97,7 +99,7 @@ describe("createDeliver", () => {
       expect(subscriber).toHaveBeenCalledTimes(1);
     });
 
-    it("delivers the same URL twice in a row when there was no launch URL at all", () => {
+    it("delivers the same URL twice in a row when getCurrent never read a launch URL", () => {
       const ctx = createMockCtx();
       const deliver = createDeliver(ctx);
 
@@ -119,16 +121,16 @@ describe("createDeliver", () => {
       expect(ctx.emit).toHaveBeenNthCalledWith(2, "deepLink:open", { url: "myapp://other" });
     });
 
-    it("a first delivery that is NOT the launch URL consumes the guard, so the launch URL is delivered later", () => {
+    it("a delivery that is not the launch URL does not consume the launch URL's drop", () => {
       const ctx = createMockCtx();
-      ctx.state.launchUrl = "myapp://open";
+      ctx.state.handedOver.set("myapp://open", "get-current");
       const deliver = createDeliver(ctx);
 
       deliver("myapp://other");
       deliver("myapp://open");
 
-      expect(ctx.emit).toHaveBeenCalledTimes(2);
-      expect(ctx.state.launchReplayDone).toBe(true);
+      expect(ctx.emit).toHaveBeenCalledTimes(1);
+      expect(ctx.emit).toHaveBeenCalledWith("deepLink:open", { url: "myapp://other" });
     });
   });
 

@@ -53,7 +53,7 @@ Types come from the root (`DeepLink` namespace, `SystemResult`) or the subpath
 
 | Method | Signature | Notes |
 |--------|-----------|-------|
-| `getCurrent` | `() => Promise<SystemResult<string \| null>>` | The URL the app was launched with, scheme-filtered. `ok(null)` when none, or when the launch URL's scheme is not in the allowlist (filtered URLs are logged at `debug`). |
+| `getCurrent` | `() => Promise<SystemResult<string \| null>>` | The URL the app was launched with, scheme-filtered. `ok(null)` when none, when the launch URL's scheme is not in the allowlist, or when that URL already reached the app through `onOpen` (see the launch handover below). Filtered and already-delivered URLs are logged at `debug`. |
 | `onOpen` | `(cb: (payload: { url: string }) => void) => Unsubscribe` | Subscribe to runtime deliveries. Synchronous and always succeeds (subscription is local); whether deliveries ever *arrive* is provider/platform-dependent — no push deliveries occur on the web in v1. Returns an unsubscribe function. |
 
 ```ts
@@ -66,7 +66,9 @@ type Unsubscribe = () => void;
 |-----------|--------|
 | No launch URL (Tauri), or the page URL carries no `deeplink` parameter / SSR (web) | `ok(null)` |
 | Web: the `deeplink` parameter is empty or not decodable | `ok(null)` (logged at `debug`) |
+| Web: the `deeplink` parameter carries `javascript:`, `data:`, `vbscript:`, `blob:` or `file:` | `ok(null)` (refused, logged at `debug`) |
 | Launch URL's scheme not in the non-empty allowlist | `ok(null)` (filtered, logged at `debug`) |
+| Launch URL already delivered through `onOpen` during the launch phase | `ok(null)` (logged at `debug`) |
 | Provider resolution failed (`@tauri-apps/plugin-deep-link` import or `onOpenUrl` registration rejected) | `err(kind, "unavailable", message)` |
 | API called before `app.start()` | `err(kind, "unavailable", "app not started — call app.start() first")` |
 | App stopped while the provider was still resolving | `err(kind, "unavailable", "stopped during resolution")` |
@@ -78,27 +80,51 @@ a typed error). Caught errors are also logged via `ctx.log.error`.
 
 ## The delivery pipeline
 
-Every runtime OS delivery passes through a filter → launch-replay guard → emit + notify pipeline
+Every runtime OS delivery passes through a filter → launch handover → emit + notify pipeline
 (`createDeliver` in `api.ts`), wired as the provider's `onUrl` channel at `onStart`:
 
 1. **Scheme filter** — when `config.schemes` is non-empty and the URL's scheme is not listed, the
-   URL is dropped and logged at `debug` level. A filtered URL does not consume the guard below.
-2. **Launch-replay guard** — the OS can deliver the launch URL to a listener that has just
-   registered, and `getCurrent()` already handed the app that same URL. So the *first* delivery is
-   dropped when it equals the launch URL `getCurrent()` recorded (`state.launchUrl`), and the
-   window closes immediately (`state.launchReplayDone`). That is the only dedup there is:
-   **a repeat of the same URL later is a real user action and is delivered.** The provider itself
-   does not dedupe — the plugin layer is the single guard.
+   URL is dropped and logged at `debug` level. A filtered URL never touches the handover record.
+2. **Launch handover** — see below.
 3. **Emit + notify** — the plugin emits the typed `deepLink:open` event, then calls every
    `onOpen()` subscriber. A subscriber that throws is caught and logged (`ctx.log.error`) so one
    bad island cannot break delivery to the others.
 
+### Launch handover — each launch URL reaches the app exactly once
+
+**Each launch URL reaches the app exactly once, through whichever path sees it first.**
+
+The OS and the app race. The OS can replay the launch URL onto the `onOpenUrl` listener the
+moment it is registered — possibly *before* the app ever calls `getCurrent()`, possibly after. So
+the guard is symmetric: both paths consult one small record of the launch URLs already handed
+over (`state.handedOver`), kept only for the duration of the **launch phase**.
+
+- A delivery equal to a URL `getCurrent()` already returned is dropped once, and logged at `debug`
+  (`deepLink:launch-replay-dropped`).
+- `getCurrent()` returns `ok(null)` for a launch URL that already reached the app through
+  `onOpen`, and logs `deepLink:get-current-already-delivered` at `debug`.
+- Repeated `getCurrent()` calls are stable: the same value every time, `ok(null)` included.
+
+**The launch phase** starts at the first launch-phase URL and ends at whichever comes first:
+
+- five seconds on the clock (the clock is injectable — `createDeliver(ctx, now)` /
+  `createDeepLinkApi(ctx, now)` — so tests cross the boundary without timers; nothing is ever
+  scheduled, the deadline is checked when a URL arrives); or
+- a delivery of a URL the app already received through `onOpen` — that repeat is a fresh user
+  action, not a launch replay.
+
+Once it ends the record is dropped and **every delivery reaches the app, however often the same
+URL arrives** — a user re-clicking the same link must work. The provider itself never dedupes;
+the plugin layer is the single guard.
+
 | Sequence | Outcome |
 |----------|---------|
-| `getCurrent()` → `myapp://a`, then the OS replays `myapp://a` | replay dropped (`deepLink:launch-replay-dropped`) |
-| …then `myapp://a` arrives again | delivered |
+| `getCurrent()` → `myapp://a`, then the OS replays `myapp://a` | replay dropped |
+| the OS delivers `myapp://a`, then `getCurrent()` | delivered through `onOpen`; `getCurrent()` → `ok(null)` |
+| `getCurrent()` forwards extra launch URLs `myapp://b`, `myapp://c` | both delivered; a later replay of `myapp://a` still dropped once |
+| `myapp://a` again, after the launch phase | delivered |
 | `myapp://a`, then `myapp://b` | both delivered |
-| `myapp://a` twice with no launch URL read | both delivered |
+| `myapp://a` twice with no launch URL read | both delivered (the second ends the launch phase) |
 
 ## Configuration
 
@@ -182,6 +208,13 @@ plumbing for other plugins, not the primary consumer-facing surface.
   or `https://app.example/#deeplink=myapp%3A%2F%2Fopen`. The page's own address is never treated
   as a deep link: an ordinary visit must not look like an app launch, and `location.href` would
   otherwise fail the scheme allowlist or, with an empty allowlist, deliver every page load.
+- **The `deeplink` parameter is attacker-controlled.** Anyone can mail a link to this app's own
+  origin with any value in it. The web provider therefore refuses executable and local schemes —
+  `javascript:`, `data:`, `vbscript:`, `blob:`, `file:` (case-insensitive, after trimming) —
+  before the value leaves the provider, so an app running with an empty `schemes` allowlist can
+  still never hand its router a `javascript:` URL. A refusal is logged at `debug` and reported as
+  `ok(null)`. The configured `schemes` allowlist applies to this value exactly as it does to a
+  native delivery: it is enforced once, in the plugin layer, for both paths.
 - **Testing:** the Tauri path requires `vi.mock("@tauri-apps/plugin-deep-link")` with
   `forceKind: "tauri"` (force-testing rule — see the runtime README); simulate deliveries by
   invoking the mocked `onOpenUrl` callback.

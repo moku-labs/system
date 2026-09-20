@@ -18,9 +18,10 @@ const createWebCtx = (): DeepLinkContext => ({
   state: {
     // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
     provider: null,
-    // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
-    launchUrl: null,
-    launchReplayDone: false,
+    handedOver: new Map(),
+    launchPhaseOpen: true,
+    // eslint-disable-next-line unicorn/no-null -- the deadline is unknown until the first launch-phase URL
+    launchPhaseEndsAt: null,
     subscribers: new Set()
   },
   emit: vi.fn(),

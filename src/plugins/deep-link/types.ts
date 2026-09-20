@@ -41,19 +41,43 @@ export type DeepLinkEvents = {
 export type Unsubscribe = () => void;
 
 /**
- * Internal deep-link state — resolution slot + launch-replay guard + island subscribers.
+ * Millisecond clock backing the launch phase. Injectable so tests can cross the window
+ * boundary without timers.
  *
  * @example
  * ```ts
- * { provider: null, launchUrl: null, launchReplayDone: false, subscribers: new Set() }
+ * const deliver = createDeliver(ctx, () => fakeNow);
+ * ```
+ */
+export type Clock = () => number;
+
+/**
+ * Which path first handed a launch-phase URL to the app — the record `createDeliver`
+ * and `getCurrent()` share so each launch URL reaches the app exactly once.
+ *
+ * @example
+ * ```ts
+ * state.handedOver.get("myapp://open"); // "get-current" | "on-open" | undefined
+ * ```
+ */
+export type HandoverPath = "get-current" | "on-open";
+
+/**
+ * Internal deep-link state — resolution slot + launch-phase handover record + subscribers.
+ *
+ * @example
+ * ```ts
+ * { provider: null, handedOver: new Map(), launchPhaseOpen: true, launchPhaseEndsAt: null, subscribers: new Set() }
  * ```
  */
 export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
-  /** The launch URL as read by getCurrent() — what the one-time replay is compared against. */
-  launchUrl: string | null;
-  /** Whether the first delivery has been seen, closing the one-time replay window. */
-  launchReplayDone: boolean;
-  /** onOpen() callbacks, notified after dedup + scheme filtering. */
+  /** Launch-phase URLs already handed to the app, keyed by the path that handed them over. */
+  handedOver: Map<string, HandoverPath>;
+  /** Whether the launch phase is still running (it ends early, or on the clock). */
+  launchPhaseOpen: boolean;
+  /** Clock deadline of the launch phase; null until the first launch-phase URL is seen. */
+  launchPhaseEndsAt: number | null;
+  /** onOpen() callbacks, notified after the handover guard + scheme filtering. */
   subscribers: Set<(payload: { url: string }) => void>;
 };
 

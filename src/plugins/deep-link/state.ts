@@ -1,15 +1,15 @@
 /**
  * @file deep-link plugin — state factory. The resolution slot starts empty; onStart
- * populates it synchronously via startResolution (spec/02 §State). launchUrl starts null
- * (nothing has read a launch URL yet) with the one-time replay window still open;
- * subscribers starts empty.
+ * populates it synchronously via startResolution (spec/02 §State). The launch phase
+ * starts open with an empty handover record and no deadline — the deadline is set from
+ * the injected clock at the first launch-phase URL; subscribers starts empty.
  */
 import type { Config } from "../../config";
 import type { DeepLinkConfig, DeepLinkState } from "./types";
 
 /**
- * Creates the initial deep-link state: an empty resolution slot plus the launch-replay
- * guard (no launch URL read yet, replay window open) and an empty subscriber set.
+ * Creates the initial deep-link state: an empty resolution slot plus the launch-phase
+ * handover record (open, empty, no deadline yet) and an empty subscriber set.
  *
  * @param {object} _ctx - Minimal context.
  * @param {object} _ctx.global - Frozen global config.
@@ -27,9 +27,10 @@ export function createDeepLinkState(_ctx: {
   return {
     // eslint-disable-next-line unicorn/no-null -- ResolutionState.provider is null until onStart (seam contract)
     provider: null,
-    // eslint-disable-next-line unicorn/no-null -- launchUrl is null until getCurrent() records one
-    launchUrl: null,
-    launchReplayDone: false,
+    handedOver: new Map(),
+    launchPhaseOpen: true,
+    // eslint-disable-next-line unicorn/no-null -- the deadline is unknown until the first launch-phase URL
+    launchPhaseEndsAt: null,
     subscribers: new Set()
   };
 }

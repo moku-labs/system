@@ -87,12 +87,14 @@ type NotifyOptions = {
 caught error is also logged via `ctx.log.error` with a `notify:{web|tauri}-{method}-failed` key.
 
 **Permission caching (Tauri).** Each `isPermissionGranted()` plugin call is an IPC round-trip, so
-`show()` would pay one per notification. The Tauri provider caches the granted state after the
-first successful read; `requestPermission()` replaces it with the prompt's answer, and
-`isPermissionGranted()` always reads through and refreshes it. A thrown read is never cached. If
-the user changes the permission in OS settings while the app runs, call
-`app.notify.isPermissionGranted()` to pick the new state up. The web provider needs no cache —
-`Notification.permission` is a synchronous property.
+`show()` would pay one per notification. The Tauri provider caches **only a granted state**:
+permission is granted once and stays granted for the session, while a *not-granted* state is
+exactly what the user flips in OS settings while the app runs. So a `false` answer is never
+cached — the next `show()` reads through again and starts working the moment the user grants
+permission, with no restart and no explicit `isPermissionGranted()` call. `requestPermission()`
+replaces the cache with the prompt's answer (a non-granted answer clears it),
+`isPermissionGranted()` always reads through and refreshes it, and a thrown read is never cached.
+The web provider needs no cache — `Notification.permission` is a synchronous property.
 
 ## Configuration
 
@@ -110,9 +112,9 @@ None — `notify` is pure request/response (`isPermissionGranted`/`requestPermis
 |--------|-------|-----|
 | Backing API | `@tauri-apps/plugin-notification` (lazy import) | global `Notification` constructor |
 | Availability probe | none (import failure → `"unavailable"`) | factory-time feature probe; absent global → all methods `"unsupported"` |
-| Permission read | `isPermissionGranted()` plugin call, cached after the first read | `Notification.permission === "granted"` (a synchronous property read) |
+| Permission read | `isPermissionGranted()` plugin call; only a **granted** answer is cached | `Notification.permission === "granted"` (a synchronous property read) |
 | Prompt | `requestPermission()` plugin call (returned value mapped to `ok(boolean)`, and it refreshes the cache) | `Notification.requestPermission()` (returned value mapped to `ok(boolean)`) |
-| `show()` guard | the cached granted state, then a `window.Notification` presence probe, then `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
+| `show()` guard | the cached granted state, re-read while not granted, then a `window.Notification` presence probe, then `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
 | `dispose()` | no-op | no-op |
 
 ## Integration notes

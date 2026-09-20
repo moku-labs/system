@@ -217,6 +217,7 @@ describe("createTauriNotifyProvider", () => {
       await provider.show({ title: "before" });
 
       await provider.requestPermission();
+      mockIsPermissionGranted.mockResolvedValue(false);
       const result = await provider.show({ title: "after" });
 
       expect(result).toEqual({
@@ -238,7 +239,35 @@ describe("createTauriNotifyProvider", () => {
 
       expect(fresh).toEqual({ ok: true, value: false, provider: "tauri" });
       expect(afterRevoke.ok).toBe(false);
+      // 1× warm-up, 1× the explicit read-through, 1× the re-read show() owes a
+      // not-granted state (only "granted" is ever cached).
+      expect(mockIsPermissionGranted).toHaveBeenCalledTimes(3);
+    });
+
+    it("a NOT-granted read is never cached — a later show picks up a permission granted in OS settings", async () => {
+      mockIsPermissionGranted.mockResolvedValue(false);
+      const provider = await createTauriNotifyProvider(createMockLog());
+
+      const denied = await provider.show({ title: "before" });
+      expect(denied.ok).toBe(false);
+
+      mockIsPermissionGranted.mockResolvedValue(true);
+      const allowed = await provider.show({ title: "after" });
+
+      expect(allowed).toEqual({ ok: true, value: undefined, provider: "tauri" });
       expect(mockIsPermissionGranted).toHaveBeenCalledTimes(2);
+      expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it("a NOT-granted read is re-read on every show, never pinned by the first answer", async () => {
+      mockIsPermissionGranted.mockResolvedValue(false);
+      const provider = await createTauriNotifyProvider(createMockLog());
+
+      await provider.show({ title: "one" });
+      await provider.show({ title: "two" });
+      await provider.show({ title: "three" });
+
+      expect(mockIsPermissionGranted).toHaveBeenCalledTimes(3);
     });
 
     it("a throw from the first permission read is not cached — the next show retries", async () => {

@@ -3,8 +3,11 @@
  * `protocol_handlers`/`launchQueue` require installed-PWA manifest config outside this
  * framework's runtime scope). A launch URL exists only when the page URL carries an
  * explicit `deeplink` parameter (`?deeplink=` or `#deeplink=`); the page's own address
- * is not a deep link. No browser globals at module scope (SSR-safe) — `location` is read
- * inside the factory body, not at import time.
+ * is not a deep link. That parameter is attacker-controlled, so a value carrying an
+ * executable or local scheme (`javascript:`, `data:`, `vbscript:`, `blob:`, `file:`) is
+ * refused here, before the configured scheme allowlist in the plugin layer ever sees it.
+ * No browser globals at module scope (SSR-safe) — `location` is read inside the factory
+ * body, not at import time.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
@@ -25,12 +28,25 @@ type WebLocation = { readonly href: string };
 const DEEP_LINK_PARAMETER = /[?#&]deeplink=([^&#]*)/;
 
 /**
+ * Schemes that execute code or reach the local machine. The `deeplink` parameter is
+ * attacker-controlled — anyone can mail a link to this app's own origin — so a value
+ * carrying one of these is refused outright, before the configured scheme allowlist
+ * ever sees it. An app running with an empty allowlist must still never hand its router
+ * a `javascript:` URL.
+ */
+const REJECTED_SCHEMES = new Set(["javascript", "data", "vbscript", "blob", "file"]);
+
+/** Leading scheme of a URL, for the hard reject below. */
+const SCHEME_PATTERN = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
+
+/**
  * Read the deep link a page URL carries in `?deeplink=` or `#deeplink=`. The value is
  * percent-encoded by whoever built the link; a malformed encoding is reported at debug
- * level and treated as "no launch URL" rather than thrown at the caller.
+ * level and treated as "no launch URL" rather than thrown at the caller. The decoded
+ * value is trimmed, then refused when it carries an executable or local scheme.
  *
  * @param {string} href - The page URL.
- * @param {LogApi} log - ctx.log for reporting an undecodable parameter (MC2).
+ * @param {LogApi} log - ctx.log for reporting a rejected or undecodable parameter (MC2).
  * @returns {string | null} The decoded deep link, or null when the page carries none.
  * @example
  * ```ts
@@ -43,13 +59,29 @@ function readDeepLinkParameter(href: string, log: LogApi): string | null {
     // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — no deep-link data on this page
     return null;
   }
+
+  let decoded: string;
   try {
-    return decodeURIComponent(raw);
+    decoded = decodeURIComponent(raw).trim();
   } catch {
     log.debug("deepLink:web-launch-undecodable", { raw });
     // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — the parameter could not be decoded
     return null;
   }
+
+  const scheme = SCHEME_PATTERN.exec(decoded)?.[1]?.toLowerCase();
+  if (scheme !== undefined && REJECTED_SCHEMES.has(scheme)) {
+    log.debug("deepLink:web-launch-rejected", { scheme });
+    // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — executable/local scheme refused
+    return null;
+  }
+
+  if (decoded === "") {
+    // eslint-disable-next-line unicorn/no-null -- SystemOk<string | null> — a whitespace-only parameter carries no deep link
+    return null;
+  }
+
+  return decoded;
 }
 
 /**
