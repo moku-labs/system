@@ -92,15 +92,15 @@ type TrayMenuItem = {
 type TrayConfig = {
   /** OS-level tray identity — lets the native shell distinguish/replace this app's tray. Default: "moku-system". */
   id: string;
-  /** Status-item image. Omit to use the app's default window icon. */
-  icon?: string;
+  /** Status-item image: a path, or the raw bytes of one. Omit to use the app's default window icon. */
+  icon?: string | Uint8Array | number[];
 };
 ```
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `id` | `string` | `"moku-system"` | OS-level tray identity. Non-empty, validated at `onInit`. |
-| `icon` | `string` (optional) | the app's default window icon | Image for the status item. Use a path the app process can actually read. |
+| `icon` | `string \| Uint8Array \| number[]` (optional) | the app's default window icon | Image for the status item: a path the app process can actually read, or the image's raw bytes. Every form the native tray accepts except its own `Image` resource — a `@tauri-apps/api` type this package never puts in its public surface. |
 
 An empty/whitespace `id` throws at `onInit`:
 
@@ -120,8 +120,14 @@ On macOS a status item created with no icon at all is invisible.
 So when `tray.icon` is omitted, the provider asks the shell for the icon the app was packaged with,
 via `defaultWindowIcon()` from `@tauri-apps/api/app` (an `Image` resource, no path guessing), and
 passes it to `TrayIcon.new`. Set `tray.icon` only when the status item needs a *different* image
-from the app icon — and then give it an absolute path, or a path relative to the working directory
-you launch with during development.
+from the app icon — and then give it an absolute path (or the bytes), or a path relative to the
+working directory you launch with during development.
+
+That `Image` is a Rust-side resource, and `TrayIcon.new` only reads its rid — it never takes
+ownership. So the provider closes the image it asked for, in a `finally` right after the status
+item is created, whether creation succeeded or failed. A failing close is logged at `debug` and
+never reaches the caller's result. A configured `tray.icon` is plain data the caller owns and is
+never closed.
 
 Either way the Tauri app needs the `image-png` (or `image-ico`) Cargo feature next to `tray-icon`;
 the `@moku-labs/native` packager emits both.
@@ -137,7 +143,7 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 | Backing API | `@tauri-apps/api/tray` + `@tauri-apps/api/menu` (lazy imports) | none | none |
 | All methods | real OS tray | `err("tauri", "unsupported")` | `err("web", "unsupported")` |
 | Icon lifecycle | created lazily on first mutating call, with `tray.icon` or the default window icon; `destroy()`/`dispose()` remove it idempotently | n/a | n/a |
-| Menu lifecycle | exactly one `Menu` alive at a time: `setMenu` closes the menu it replaced *after* the swap, and closes a menu that failed to attach | n/a | n/a |
+| Menu lifecycle | exactly one `Menu` alive at a time: `setMenu` closes the menu it replaced *after* the swap, and closes a menu that failed to attach. Swaps are serialized through one queue, so overlapping `setMenu` calls cannot resolve out of order and close the menu the OS is showing | n/a | n/a |
 | `dispose()` (at `app.stop()`) | destroys the cached OS icon and closes the attached menu | no-op | no-op |
 
 ## Integration notes
@@ -156,7 +162,8 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
   contract, not this framework's. The default needs no path at all (see Configuration).
 - **Menus are Rust-side resources.** Every `Menu.new()` allocates one, plus a Channel per item with
   an `action`. The provider keeps a single menu alive and closes the replaced one on each
-  `setMenu`, so a periodically refreshed menu does not accumulate handles.
+  `setMenu`, so a periodically refreshed menu does not accumulate handles. Concurrent
+  `setMenu` calls are safe: they queue, and the last one issued is the one left showing.
 - **`app.stop()` cleans up:** the teardown registry awaits the provider's `dispose()`, so a tray
   icon created during the session is removed on orderly shutdown.
 - **Testing:** the web branch needs no mocks (`forceKind: "web"`). Exercising the desktop branch

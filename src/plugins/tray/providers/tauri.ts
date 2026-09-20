@@ -8,6 +8,10 @@
  * it idempotently, and the next mutating call after a destroy recreates it lazily
  * again. The attached `Menu` is a Rust-side resource too: exactly one is kept alive at
  * a time, the replaced one is closed after the swap, and teardown closes the last one.
+ * Every swap (and teardown) runs through one promise queue, so overlapping `setMenu()`
+ * calls can never resolve out of order and close the menu the OS is showing. The
+ * default window icon is a Rust-side `Image` resource as well — `TrayIcon.new` only
+ * reads its rid, so this provider closes the one it asked for.
  */
 import type { LogApi } from "@moku-labs/common";
 import type { SystemResult } from "../../runtime/result";
@@ -86,6 +90,19 @@ type NativeMenuItemOptions = {
 };
 
 /**
+ * Swallow a menu swap's outcome when building the queue tail — the outcome belongs to
+ * the caller that awaited the swap, never to the next one waiting behind it.
+ *
+ * @example
+ * ```ts
+ * menuQueue = running.then(ignoreSwapOutcome, ignoreSwapOutcome);
+ * ```
+ */
+function ignoreSwapOutcome(): void {
+  // Intentionally empty — the queue tail carries no value and never rejects.
+}
+
+/**
  * Wrap a zero-arg TrayMenuItem action as a native `(id: string) => void` click handler.
  *
  * @param {() => void} action - The original isomorphic action callback.
@@ -147,6 +164,16 @@ export async function createTauriTrayProvider(
   /** What TrayIcon.new accepts as its image: a path, raw bytes, or an Image resource. */
   type IconSource = NonNullable<NonNullable<Parameters<typeof TrayIcon.new>[0]>["icon"]>;
 
+  /**
+   * A Rust-side image resource this provider created and therefore has to release.
+   * `TrayIcon.new` only reads the image's `rid` (see `transformImage` in
+   * `@tauri-apps/api/image`) — it never takes ownership.
+   */
+  type OwnedIconImage = { close: () => Promise<void> };
+
+  /** The image to create the status item with, plus the resource to release afterwards. */
+  type ResolvedTrayIcon = { icon: IconSource; owned?: OwnedIconImage };
+
   let iconPromise: Promise<TrayIconHandle> | undefined;
   let currentMenu: MenuHandle | undefined;
 
@@ -155,28 +182,54 @@ export async function createTauriTrayProvider(
    * otherwise the app's own default window icon. A relative path is resolved against
    * the process working directory, which a bundled app does not control, so the
    * bundle's window icon — not a path guess — is the default that actually works.
+   * A configured icon is plain data the caller owns; the default one is a resource
+   * this provider just allocated, so it comes back marked for release.
    *
-   * @returns {Promise<IconSource>} The icon to hand to TrayIcon.new.
+   * @returns {Promise<ResolvedTrayIcon>} The icon for TrayIcon.new, plus what to release.
    * @example
    * ```ts
-   * const icon = await resolveIcon();
+   * const { icon, owned } = await resolveIcon();
    * ```
    */
-  async function resolveIcon(): Promise<IconSource> {
+  async function resolveIcon(): Promise<ResolvedTrayIcon> {
     if (config.icon !== undefined) {
-      return config.icon;
+      return { icon: config.icon };
     }
     const { defaultWindowIcon } = await import("@tauri-apps/api/app");
     const icon = await defaultWindowIcon();
     if (!icon) {
       throw new TrayIconUnavailableError("the app bundle exposes no default window icon");
     }
-    return icon;
+    return { icon, owned: icon };
+  }
+
+  /**
+   * Release an image resource this provider allocated. A failed close is hygiene, not
+   * the caller's problem, so it is reported through ctx.log and never rethrown.
+   *
+   * @param {OwnedIconImage | undefined} image - The image to release; undefined is a no-op.
+   * @returns {Promise<void>} Resolves once the image is closed (or the failure is logged).
+   * @example
+   * ```ts
+   * await releaseIconImage(owned);
+   * ```
+   */
+  async function releaseIconImage(image: OwnedIconImage | undefined): Promise<void> {
+    if (image === undefined) {
+      return;
+    }
+    try {
+      await image.close();
+    } catch (error) {
+      log.debug("tray:tauri-default-icon-close-failed", { reason: toError(error).message });
+    }
   }
 
   /**
    * Create the OS status item with its icon, translating a missing icon file into the
-   * typed "unavailable" failure instead of an opaque OS message.
+   * typed "unavailable" failure instead of an opaque OS message. The default window
+   * icon is released in a `finally` once `TrayIcon.new` has read its rid — success or
+   * failure, the resource never outlives this call.
    *
    * @returns {Promise<TrayIconHandle>} The freshly created tray icon handle.
    * @example
@@ -185,7 +238,7 @@ export async function createTauriTrayProvider(
    * ```
    */
   async function createIcon(): Promise<TrayIconHandle> {
-    const icon = await resolveIcon();
+    const { icon, owned } = await resolveIcon();
     try {
       return await TrayIcon.new({ id: config.id, icon });
     } catch (error) {
@@ -196,6 +249,8 @@ export async function createTauriTrayProvider(
         throw error;
       }
       throw new TrayIconUnavailableError(toError(error).message);
+    } finally {
+      await releaseIconImage(owned);
     }
   }
 
@@ -219,6 +274,31 @@ export async function createTauriTrayProvider(
     } catch (error) {
       log.error("tray:tauri-menu-close-failed", undefined, toError(error));
     }
+  }
+
+  /**
+   * Tail of the menu-swap queue. Every build-attach-release sequence runs through it,
+   * so two overlapping `setMenu()` calls can never interleave — without it their native
+   * swaps can resolve out of order and the call that finishes last closes the menu the
+   * OS is actually showing. The tail never rejects, so one failed swap cannot poison
+   * the queue for the next one.
+   */
+  let menuQueue: Promise<void> = Promise.resolve();
+
+  /**
+   * Run one menu swap after every swap queued before it.
+   *
+   * @param {() => Promise<void>} swap - The build-attach-release sequence to serialize.
+   * @returns {Promise<void>} The swap's own outcome — rejections reach its caller only.
+   * @example
+   * ```ts
+   * await enqueueMenuSwap(async () => attachMenu(await ensureIcon(), await Menu.new(options)));
+   * ```
+   */
+  function enqueueMenuSwap(swap: () => Promise<void>): Promise<void> {
+    const running = menuQueue.then(swap, swap);
+    menuQueue = running.then(ignoreSwapOutcome, ignoreSwapOutcome);
+    return running;
   }
 
   /**
@@ -308,7 +388,8 @@ export async function createTauriTrayProvider(
   return {
     /**
      * Replace the tray menu. Creates the OS icon lazily on first call, and releases the
-     * menu this call replaces.
+     * menu this call replaces. Overlapping calls run one after another, so the menu the
+     * OS shows and the menu this provider holds open never disagree.
      *
      * @param {TrayMenuItem[]} items - Menu items.
      * @returns {Promise<SystemResult<void>>} ok when applied.
@@ -319,9 +400,11 @@ export async function createTauriTrayProvider(
      */
     setMenu: async (items: TrayMenuItem[]): Promise<SystemResult<void>> => {
       try {
-        const trayIcon = await ensureIcon();
-        const menu = await Menu.new({ items: items.map(item => toNativeMenuItem(item)) });
-        await attachMenu(trayIcon, menu);
+        await enqueueMenuSwap(async () => {
+          const trayIcon = await ensureIcon();
+          const menu = await Menu.new({ items: items.map(item => toNativeMenuItem(item)) });
+          await attachMenu(trayIcon, menu);
+        });
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-set-menu-failed", undefined, toError(error));
@@ -382,7 +465,7 @@ export async function createTauriTrayProvider(
      */
     destroy: async (): Promise<SystemResult<void>> => {
       try {
-        await destroyIcon();
+        await enqueueMenuSwap(destroyIcon);
         return ok(undefined, PROVIDER);
       } catch (error) {
         log.error("tray:tauri-destroy-failed", undefined, toError(error));
@@ -392,7 +475,8 @@ export async function createTauriTrayProvider(
 
     /**
      * Teardown — destroys the cached OS icon and its menu if present (idempotent with
-     * destroy()).
+     * destroy()). Queued behind any in-flight menu swap, so teardown never races a
+     * swap into leaving a menu open.
      *
      * @returns {Promise<void>} Resolves once teardown completes.
      * @example
@@ -400,6 +484,6 @@ export async function createTauriTrayProvider(
      * await provider.dispose();
      * ```
      */
-    dispose: (): Promise<void> => destroyIcon()
+    dispose: (): Promise<void> => enqueueMenuSwap(destroyIcon)
   };
 }

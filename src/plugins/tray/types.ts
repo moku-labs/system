@@ -23,12 +23,14 @@ export type TrayConfig = {
   /** OS-level tray identity. Validated non-empty at onInit. Default: "moku-system". */
   id: string;
   /**
-   * Status-item image: a path the app process can read, or bytes. Omit it to use the
-   * app's default window icon (the packager's bundle icon) — the reliable default,
-   * since a relative path is resolved against the process working directory, which a
-   * bundled app does not control.
+   * Status-item image: a path the app process can read, or the raw bytes of one —
+   * every form the native tray takes except its own `Image` resource, which is a
+   * `@tauri-apps/api` type this package never puts in its public surface. Omit it to
+   * use the app's default window icon (the packager's bundle icon) — the reliable
+   * default, since a relative path is resolved against the process working directory,
+   * which a bundled app does not control.
    */
-  icon?: string;
+  icon?: string | Uint8Array | number[];
 };
 
 /**

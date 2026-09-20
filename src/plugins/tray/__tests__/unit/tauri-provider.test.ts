@@ -31,8 +31,10 @@ const {
     return menu;
   };
   const mockMenuNew = vi.fn(async (_options?: { items?: NativeMenuItemOptions[] }) => newMenu());
-  // Stand-in for the Image resource @tauri-apps/api/app's defaultWindowIcon() resolves to.
-  const defaultIcon = { rid: 1 };
+  // Stand-in for the Image resource @tauri-apps/api/app's defaultWindowIcon() resolves
+  // to. It is a Rust-side Resource: TrayIcon.new only reads its rid, so the caller that
+  // created it still owns it and has to close it.
+  const defaultIcon = { rid: 1, close: vi.fn(async () => undefined) };
   const mockDefaultWindowIcon = vi.fn(async () => defaultIcon as typeof defaultIcon | null);
   return {
     fakeTrayIcon,
@@ -52,6 +54,16 @@ vi.mock("@tauri-apps/api/app", () => ({ defaultWindowIcon: mockDefaultWindowIcon
 import { createTauriTrayProvider } from "../../providers/tauri";
 import { createMockLog } from "./test-helpers";
 
+/**
+ * Drain the microtask queue so anything a queued call *would* have done has had every
+ * chance to happen before the test asserts that it did not.
+ */
+const flushMicrotasks = async (): Promise<void> => {
+  for (let tick = 0; tick < 50; tick += 1) {
+    await Promise.resolve();
+  }
+};
+
 beforeEach(() => {
   mockTrayIconNew.mockClear();
   mockTrayIconNew.mockImplementation(async () => fakeTrayIcon);
@@ -60,6 +72,7 @@ beforeEach(() => {
   mockMenuNew.mockImplementation(async () => newMenu());
   mockDefaultWindowIcon.mockClear();
   mockDefaultWindowIcon.mockImplementation(async () => defaultIcon);
+  defaultIcon.close.mockReset().mockResolvedValue(undefined);
   fakeTrayIcon.setIcon.mockReset().mockResolvedValue(undefined);
   fakeTrayIcon.setMenu.mockReset().mockResolvedValue(undefined);
   fakeTrayIcon.setTooltip.mockReset().mockResolvedValue(undefined);
@@ -273,6 +286,45 @@ describe("createTauriTrayProvider", () => {
       expect(result.ok ? "" : result.message).toContain("tray.icon");
     });
 
+    it("closes the default window icon Image once the status item has been created", async () => {
+      const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+      await provider.setTooltip("hover");
+
+      expect(mockTrayIconNew).toHaveBeenCalledTimes(1);
+      expect(defaultIcon.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes the default window icon Image even when creating the status item fails", async () => {
+      mockTrayIconNew.mockRejectedValueOnce(new Error("transient OS failure"));
+      const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+      const result = await provider.setTooltip("hover");
+
+      expect(result.ok).toBe(false);
+      expect(defaultIcon.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("a failing default-icon close never surfaces on the caller's result", async () => {
+      defaultIcon.close.mockRejectedValue(new Error("image already closed"));
+      const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+      const result = await provider.setTooltip("hover");
+
+      expect(result).toEqual({ ok: true, value: undefined, provider: "tauri" });
+    });
+
+    it("never closes a configured tray.icon — the provider does not own it", async () => {
+      const provider = await createTauriTrayProvider(
+        { id: "my-app", icon: "/Applications/My.app/Contents/Resources/tray.png" },
+        createMockLog()
+      );
+
+      await provider.setTooltip("hover");
+
+      expect(defaultIcon.close).not.toHaveBeenCalled();
+    });
+
     it("reports 'unavailable' naming tray.icon when the app has no default window icon", async () => {
       // eslint-disable-next-line unicorn/no-null -- defaultWindowIcon() resolves Image | null
       mockDefaultWindowIcon.mockResolvedValue(null);
@@ -337,6 +389,57 @@ describe("createTauriTrayProvider", () => {
       await provider.destroy();
 
       expect(createdMenus[0]?.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("serializes overlapping setMenu calls, even when the native swap resolves out of order", async () => {
+      const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+      // The first native swap hangs until released — long enough for a second setMenu
+      // to overtake it and, unserialized, close the menu the first one is attaching.
+      let releaseFirstSwap = (): void => undefined;
+      let firstSwapStarted = (): void => undefined;
+      const reachedNativeSwap = new Promise<void>(started => {
+        firstSwapStarted = started;
+      });
+      fakeTrayIcon.setMenu.mockImplementationOnce(
+        () =>
+          new Promise<undefined>(resolve => {
+            releaseFirstSwap = (): void => resolve(undefined);
+            firstSwapStarted();
+          })
+      );
+
+      const first = provider.setMenu([{ id: "a", text: "A" }]);
+      await reachedNativeSwap;
+      const second = provider.setMenu([{ id: "b", text: "B" }]);
+      await flushMicrotasks();
+
+      // The second swap has not built a menu, let alone attached one.
+      expect(mockMenuNew).toHaveBeenCalledTimes(1);
+      expect(fakeTrayIcon.setMenu).toHaveBeenCalledTimes(1);
+
+      releaseFirstSwap();
+      const results = await Promise.all([first, second]);
+
+      expect(results).toEqual([
+        { ok: true, value: undefined, provider: "tauri" },
+        { ok: true, value: undefined, provider: "tauri" }
+      ]);
+      expect(fakeTrayIcon.setMenu).toHaveBeenNthCalledWith(1, createdMenus[0]);
+      expect(fakeTrayIcon.setMenu).toHaveBeenNthCalledWith(2, createdMenus[1]);
+      expect(createdMenus[0]?.close).toHaveBeenCalledTimes(1);
+      expect(createdMenus[1]?.close).not.toHaveBeenCalled();
+    });
+
+    it("a failing swap does not poison the queue — the next setMenu still runs", async () => {
+      fakeTrayIcon.setMenu.mockRejectedValueOnce(new Error("setMenu failed"));
+      const provider = await createTauriTrayProvider({ id: "my-app" }, createMockLog());
+
+      const failed = await provider.setMenu([{ id: "a", text: "A" }]);
+      const recovered = await provider.setMenu([{ id: "b", text: "B" }]);
+
+      expect(failed.ok).toBe(false);
+      expect(recovered).toEqual({ ok: true, value: undefined, provider: "tauri" });
+      expect(fakeTrayIcon.setMenu).toHaveBeenNthCalledWith(2, createdMenus[1]);
     });
 
     it("a failing menu close is logged and never breaks the call", async () => {
