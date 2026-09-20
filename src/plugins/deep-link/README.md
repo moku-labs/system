@@ -167,6 +167,11 @@ plumbing for other plugins, not the primary consumer-facing surface.
   (error/debug reporting) — always injected, never a `depends` edge.
 - **Packages:** `@tauri-apps/plugin-deep-link` is an *optional* peerDependency, reached only via a
   lazy dynamic import inside the Tauri provider factory — pure-web bundles never include it.
+- **Native permissions:** ACL `deep-link:default` plus `core:event:default` (part of
+  `core:default`, needed for the `onOpenUrl` event channel); Rust side `tauri-plugin-deep-link`
+  with `init()`, schemes declared in the Tauri config. Windows and Linux additionally need
+  single-instance forwarding (see below). `@moku-labs/native` codegens these from the
+  `config.system` entry named `deep-link`.
 - **Naming (D-007):** plugin name string `deepLink` (so `pluginConfigs: { deepLink: ... }` and
   `app.deepLink`), directory `deep-link/`, subpath `@moku-labs/system/deep-link`, event
   `deepLink:open`.

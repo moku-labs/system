@@ -111,6 +111,10 @@ None — `clipboard` is pure request/response (`readText`/`writeText` via `app.c
 - **Packages:** `@tauri-apps/plugin-clipboard-manager` is an *optional* peerDependency, reached
   only via a lazy dynamic import inside the Tauri provider factory — pure-web bundles never
   include it.
+- **Native permissions:** ACL `clipboard-manager:allow-read-text` and
+  `clipboard-manager:allow-write-text` — `clipboard-manager:default` grants nothing; Rust side
+  `tauri-plugin-clipboard-manager` with `init()`. `@moku-labs/native` codegens both from the
+  `config.system` entry named `clipboard-manager`.
 - **Call from a user gesture on web:** `readText` (and in some browsers `writeText`) succeeds only
   with user activation; outside one you should expect `"denied"`. Design the island to fall back
   (manual copy UI) rather than retry.

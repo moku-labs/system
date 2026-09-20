@@ -16,11 +16,26 @@ const PLUGIN_NAME = "store";
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const defaultConfig: StoreConfig = { name: "moku-system" };
 
+/**
+ * Store capability plugin — JSON-safe key-value persistence behind the Tauri/web provider
+ * seam. Imported from `@moku-labs/system/store` and composed via `createApp({ plugins })`.
+ *
+ * @see README.md
+ */
 export const storePlugin = createPlugin(PLUGIN_NAME, {
   config: defaultConfig,
   createState: createStoreState,
   api: createStoreApi,
-  // eslint-disable-next-line jsdoc/require-jsdoc
+  /**
+   * Validate the configured namespace before anything uses it — a programmer error, so it
+   * throws at `createApp` instead of folding into a `SystemResult`.
+   *
+   * @param {object} ctx - Plugin context carrying the resolved store config.
+   * @example
+   * ```ts
+   * createApp({ plugins: [storePlugin], pluginConfigs: { store: { name: "../escape" } } }); // TypeError
+   * ```
+   */
   onInit: ctx => {
     if (!NAME_PATTERN.test(ctx.config.name)) {
       throw new TypeError(
@@ -28,11 +43,29 @@ export const storePlugin = createPlugin(PLUGIN_NAME, {
       );
     }
   },
-  // onStart/onStop manage a real resource: the in-flight provider resolution promise.
-  // eslint-disable-next-line jsdoc/require-jsdoc
+  /**
+   * Start provider resolution — fire-and-forget, so a slow or failing `@tauri-apps/*`
+   * load never blocks `app.start()`; the failure folds into the next call's result.
+   *
+   * @param {object} ctx - Plugin context; carries the detected runtime and the state slot.
+   * @example
+   * ```ts
+   * await app.start(); // store provider resolution begins here
+   * ```
+   */
   onStart: ctx => {
     startResolution(PLUGIN_NAME, ctx.runtime.kind, ctx, loadStoreProvider(ctx));
   },
-  // eslint-disable-next-line jsdoc/require-jsdoc
+  /**
+   * Await the in-flight resolution, then dispose the provider — on Tauri that saves and
+   * closes the underlying store resource.
+   *
+   * @param {object} ctx - Plugin context carrying the resolution slot.
+   * @returns {Promise<void>} Resolves once the provider is disposed.
+   * @example
+   * ```ts
+   * await app.stop(); // pending writes saved, store closed
+   * ```
+   */
   onStop: ctx => stopResolution(PLUGIN_NAME, ctx)
 });

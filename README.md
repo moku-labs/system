@@ -14,7 +14,7 @@ Isomorphic system capabilities for Moku apps — `store`, `tray`, `notify`, `cli
 
 <br/>
 
-[Install](#install) · [Quick start](#quick-start) · [Plugins](#plugins) · [The SystemResult contract](#the-systemresult-contract) · [Usage](#usage) · [Development](#development)
+[Install](#install) · [Quick start](#quick-start) · [Plugins](#plugins) · [The SystemResult contract](#the-systemresult-contract) · [Native permissions](#native-permissions) · [Usage](#usage) · [Development](#development)
 
 ---
 
@@ -115,14 +115,41 @@ Compose only what you need — each plugin mounts its API at `app.<name>`:
 | Plugin | Import from | Config (`pluginConfigs` key) | Key API | Events |
 |---|---|---|---|---|
 | [`storePlugin`](./src/plugins/store/README.md) | `@moku-labs/system/store` | `store: { name }` (default `"moku-system"`) | `get` / `set` / `delete` / `keys` / `clear` — JSON-safe key-value persistence (Tauri store file with awaited `save()`; IndexedDB via `idb-keyval` on web) | — |
-| [`trayPlugin`](./src/plugins/tray/README.md) | `@moku-labs/system/tray` | `tray: { id }` (default `"moku-system"`) | `setMenu` / `setTooltip` / `setIcon` / `destroy` — desktop tray icon, created lazily on first mutating call | — |
+| [`trayPlugin`](./src/plugins/tray/README.md) | `@moku-labs/system/tray` | `tray: { id, icon? }` (default `"moku-system"`; no `icon` = the app's default window icon) | `setMenu` / `setTooltip` / `setIcon` / `destroy` — desktop tray icon, created lazily on first mutating call | — |
 | [`notifyPlugin`](./src/plugins/notify/README.md) | `@moku-labs/system/notify` | — (no config) | `show` / `requestPermission` / `isPermissionGranted` — explicit permission flow; `show()` never auto-prompts | — |
 | [`clipboardPlugin`](./src/plugins/clipboard/README.md) | `@moku-labs/system/clipboard` | — (no config) | `readText` / `writeText` — text only; feature-probed, `NotAllowedError` → `"denied"` | — |
-| [`deepLinkPlugin`](./src/plugins/deep-link/README.md) | `@moku-labs/system/deep-link` | `deepLink: { schemes }` (default `[]` = all) | `getCurrent` / `onOpen` — launch URL + runtime deliveries, deduped | `deepLink:open` |
+| [`deepLinkPlugin`](./src/plugins/deep-link/README.md) | `@moku-labs/system/deep-link` | `deepLink: { schemes }` (default `[]` = all) | `getCurrent` / `onOpen` — launch URL + runtime deliveries; only the one-time launch replay is deduped | `deepLink:open` |
 | [`runtime`](./src/plugins/runtime/README.md) *(core — auto-registered)* | — | `runtime: { forceKind, forcePlatform }` (default `null` = auto-detect) | `ctx.runtime.kind` / `ctx.runtime.platform` — the single override point for the whole seam | — |
 
 > [!NOTE]
 > `tray` is desktop-only by nature: the web provider and the Tauri mobile (iOS/Android) branch both answer every method with `err("unsupported")` — same contract, no special-casing.
+
+> [!TIP]
+> **Deep links on the web.** There is no push channel, and the page's own address is never treated as a deep link. The web provider reads an explicit parameter instead: `?deeplink=` or `#deeplink=`, percent-encoded — `https://app.example/?deeplink=myapp%3A%2F%2Fopen%3Fid%3D1`. Anything else resolves `ok(null)`.
+
+## Native permissions
+
+Every capability that reaches the OS needs a Tauri ACL permission in the app's capability file and a Rust-side plugin. [`@moku-labs/native`](https://github.com/moku-labs/native) codegens exactly this — the capability file, the Cargo dependencies and the plugin registrations — from whichever system plugins your app composes. The table is here so you can audit what a native build will ask for.
+
+| Capability | ACL permissions | Rust side |
+|---|---|---|
+| `store` | `store:default` | `tauri-plugin-store` — `tauri_plugin_store::Builder::default().build()` |
+| `notify` | `notification:default` | `tauri-plugin-notification` — `init()` |
+| `clipboard` | `clipboard-manager:allow-read-text`, `clipboard-manager:allow-write-text` | `tauri-plugin-clipboard-manager` — `init()` |
+| `deepLink` | `deep-link:default`, `core:event:default` | `tauri-plugin-deep-link` — `init()`, schemes declared in the Tauri config |
+| `tray` | `core:tray:default`, `core:menu:default`, `core:image:default`, `core:resources:default` | no plugin crate — Cargo features `tray-icon` + `image-png`. Desktop only |
+
+Two traps the table hides: `clipboard-manager:default` grants nothing, so the two `allow-*` permissions are the ones that matter; the `core:*` entries (tray's four, and `core:event:default`) all ship inside `core:default`. Deep links on Windows and Linux also need single-instance forwarding, which the packager wires.
+
+The two sides name the plugins differently — `@moku-labs/native` keys its `config.system` by the Tauri plugin name:
+
+| This framework | `@moku-labs/native` `config.system` |
+|---|---|
+| `store` | `store` |
+| `notify` | `notification` |
+| `clipboard` | `clipboard-manager` |
+| `tray` | `tray` |
+| `deepLink` | `deep-link` |
 
 ## Usage
 
@@ -157,9 +184,23 @@ const launch = await system.deepLink.getCurrent();
 const unsubscribe = system.deepLink.onOpen(({ url }) => route(url));
 ```
 
+### Bundling for the web
+
+Each capability loads its Tauri provider through a lazy `import("./tauri")`, so `@tauri-apps/*` ends up in separate chunks that a web build never executes. Your bundler still has to *resolve* those specifiers. Either install the optional peers (they stay in the unused chunks), or mark them external:
+
+```ts
+// Bun
+await Bun.build({ entrypoints: ["src/main.ts"], outdir: "dist", external: ["@tauri-apps/*"] });
+```
+
+```ts
+// Vite / Rollup
+export default { build: { rollupOptions: { external: /^@tauri-apps\// } } };
+```
+
 ### Forcing the runtime (tests, storybooks)
 
-The `runtime` core plugin detects the shell from the environment — `"tauri"` when the `__TAURI_INTERNALS__` marker exists on `globalThis`, `"web"` otherwise, and the platform from the user-agent. Consumer tests make provider decisions deterministic by stubbing that environment **before** the app starts (core-plugin config is fixed at the framework layer and not overridable from `createApp`):
+The `runtime` core plugin detects the shell from the environment — `"tauri"` when `globalThis.isTauri === true` or the `__TAURI_INTERNALS__` marker is present, `"web"` otherwise, and the platform from the user-agent. Consumer tests make provider decisions deterministic by stubbing that environment **before** the app starts:
 
 ```ts
 // Force "tauri" detection: define the shell marker before start() — and pair it with
@@ -171,6 +212,17 @@ const app = createApp({
   plugins: [storePlugin],
   pluginConfigs: { store: { name: "test-db" } }
 });
+```
+
+Detection can also be overridden directly: `pluginConfigs: { runtime: { forceKind, forcePlatform } }` **is** applied — consumer config wins the core-plugin cascade. One catch: `runtime` is a core plugin, so it is not one of `createApp`'s typed `pluginConfigs` keys (those come from the plugins you compose). Hoist the object instead of inlining it, and TypeScript accepts the extra key:
+
+```ts
+const pluginConfigs = {
+  store: { name: "test-db" },
+  runtime: { forceKind: "web", forcePlatform: "windows" }
+} as const;
+
+const app = createApp({ plugins: [storePlugin], pluginConfigs });
 ```
 
 > [!TIP]

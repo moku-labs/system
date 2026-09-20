@@ -18,7 +18,8 @@ Contents:
   8. Error-handling patterns
   9. Usage examples
   10. Extension pattern (createPlugin)
-  11. Peer dependencies & environment
+  11. Peer dependencies, web bundling & environment
+  12. Native permissions (Tauri ACL) & cross-repo naming
 
 ====================================================================
 1. Entry points & exports
@@ -154,11 +155,18 @@ src/plugins/runtime/types.ts:
   };
 
 Detection rules (src/plugins/runtime/detect.ts):
-  - kind: "tauri" when the Tauri 2 marker __TAURI_INTERNALS__ is present on globalThis,
-    "web" otherwise.
+  - kind: "tauri" when globalThis.isTauri === true OR the Tauri 2 marker
+    __TAURI_INTERNALS__ is present on globalThis; "web" otherwise.
   - platform: navigator UA heuristics -> "macos" | "windows" | "linux" | "ios" |
     "android"; "unknown" when undetectable (including SSR, where navigator is absent).
+  - Inside the Tauri shell a Macintosh UA with navigator.maxTouchPoints > 1 is "ios" —
+    that is an iPad in desktop mode, which has no tray.
   - Browser globals are touched only inside function bodies — SSR-safe to import.
+
+Overrides: pluginConfigs: { runtime: { forceKind, forcePlatform } } is applied from
+createApp too (consumer config wins the core-plugin cascade), but `runtime` is not one of
+createApp's TYPED pluginConfigs keys (those come from the plugins you compose) — hoist the
+object into a const instead of inlining it (see section 9).
 
 ====================================================================
 4. Capability plugins — full public types
@@ -182,7 +190,7 @@ src/plugins/store/types.ts:
 
   /** Store namespace config — maps to the Tauri store filename and IndexedDB database name. */
   export type StoreConfig = {
-    /** Namespace for persisted data. Validated non-empty at onInit. Default: "moku-system". */
+    /** Namespace for persisted data. File-safe, validated at onInit. Default: "moku-system". */
     name: string;
   };
 
@@ -206,17 +214,20 @@ src/plugins/store/types.ts:
     clear: () => Promise<SystemResult<void>>;
   };
 
-onInit: throws TypeError "[system] store.name must be a non-empty string." when
-config.name.trim() === "".
+onInit: config.name must match /^[a-z0-9][a-z0-9._-]*$/i — it becomes a filename segment
+under app_data_dir, so separators, a leading dot and ".." are rejected with
+TypeError '[system] store.name must be a file-safe namespace — received "...".'
+dispose() (at app.stop()) saves and closes the Tauri Store resource.
 
 --------------------------------------------------------------------
 4.2 tray — plugin name "tray", subpath "@moku-labs/system/tray"
 --------------------------------------------------------------------
 Desktop system tray. The web provider is all-"unsupported" (no browser tray API) and the
-Tauri provider is platform-gated (iOS/Android report kind "tauri" but have no tray) —
-both absence branches come from the same unsupportedProvider() factory. On Tauri
-desktop the OS icon is created lazily on the first mutating call; dispose() destroys it
-at app.stop().
+Tauri provider is gated by a desktop ALLOWLIST — only macos/windows/linux get the real
+provider, while ios/android/unknown get a typed absence — both absence branches coming
+from the same unsupportedProvider() factory. On Tauri desktop the OS icon is created
+lazily on the first mutating call; exactly one Menu is kept alive (setMenu closes the one
+it replaced); dispose() destroys icon + menu at app.stop().
 
 src/plugins/tray/types.ts:
 
@@ -224,6 +235,15 @@ src/plugins/tray/types.ts:
   export type TrayConfig = {
     /** OS-level tray identity. Validated non-empty at onInit. Default: "moku-system". */
     id: string;
+    /**
+     * Status-item image: a path the app process can read, or bytes. Omit it to use the
+     * app's default window icon (defaultWindowIcon() from @tauri-apps/api/app) — the
+     * reliable default, since a relative path resolves against the process working
+     * directory, which a bundled app does not control. A macOS status item created with
+     * no icon at all is invisible. A missing image file resolves
+     * err("tauri", "unavailable", <message naming tray.icon>).
+     */
+    icon?: string;
   };
 
   /** Isomorphic tray menu item. action runs in the webview on click (Tauri desktop only). */
@@ -315,9 +335,12 @@ src/plugins/clipboard/types.ts:
 4.5 deepLink — plugin name "deepLink", subpath "@moku-labs/system/deep-link"
 --------------------------------------------------------------------
 Deep-link URL delivery — the only push-driven capability, and the only plugin that
-declares events. Dedups by last-delivered URL in state (upstream getCurrent() replays
-the last-ever URL on every onOpenUrl() registration, e.g. remount/HMR). Naming: plugin
-name string "deepLink", directory deep-link/, event "deepLink:open".
+declares events. Dedup is REPLAY-ONLY: the first delivery is dropped when it equals the
+launch URL getCurrent() recorded, and the window closes immediately; a later repeat of
+the same URL is a real user action and IS delivered. On the web, getCurrent() reads an
+explicit ?deeplink= / #deeplink= parameter off the page URL (percent-encoded) and
+resolves ok(null) for an ordinary visit — the page's own address is never a deep link.
+Naming: plugin name string "deepLink", directory deep-link/, event "deepLink:open".
 
 src/plugins/deep-link/types.ts:
 
@@ -336,10 +359,12 @@ src/plugins/deep-link/types.ts:
   /** Unsubscribe function returned by onOpen. */
   export type Unsubscribe = () => void;
 
-  /** Internal deep-link state — resolution slot + dedup guard + island subscribers. */
+  /** Internal deep-link state — resolution slot + launch-replay guard + island subscribers. */
   export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
-    /** Last delivered URL — dedup guard against the upstream getCurrent() replay bug. */
-    lastUrl: string | null;
+    /** The launch URL as read by getCurrent() — what the one-time replay is compared against. */
+    launchUrl: string | null;
+    /** Whether the first delivery has been seen, closing the one-time replay window. */
+    launchReplayDone: boolean;
     /** onOpen() callbacks, notified after dedup + scheme filtering. */
     subscribers: Set<(payload: { url: string }) => void>;
   };
@@ -391,8 +416,11 @@ pluginConfigs, keyed by plugin name string:
   pluginConfigs: {
     runtime?:  { forceKind: "tauri" | "web" | null;        // default null (auto-detect)
                  forcePlatform: RuntimePlatform | null },   // default null (auto-detect)
-    store?:    { name: string },                            // default "moku-system"; non-empty
-    tray?:     { id: string },                              // default "moku-system"; non-empty
+    store?:    { name: string },                            // default "moku-system";
+                                                            // /^[a-z0-9][a-z0-9._-]*$/i
+    tray?:     { id: string; icon?: string },               // id default "moku-system",
+                                                            // non-empty; no icon = the app's
+                                                            // default window icon
     deepLink?: { schemes: string[] }                        // default [] (= accept all);
                                                             // lowercase scheme pattern
   }
@@ -465,8 +493,8 @@ probe the result instead:
 
 Programmer errors still throw:
 
-  createApp({ plugins: [storePlugin], pluginConfigs: { store: { name: "" } } });
-  // -> TypeError: [system] store.name must be a non-empty string.
+  createApp({ plugins: [storePlugin], pluginConfigs: { store: { name: "../escape" } } });
+  // -> TypeError: [system] store.name must be a file-safe namespace — received "../escape".
 
 ====================================================================
 9. Usage examples
@@ -521,13 +549,14 @@ Deterministic tests — force the seam:
   import { createApp } from "@moku-labs/system";
   import { storePlugin } from "@moku-labs/system/store";
 
-  const app = createApp({
-    plugins: [storePlugin],
-    pluginConfigs: {
-      store: { name: "test-db" },
-      runtime: { forceKind: "web", forcePlatform: "macos" }
-    }
-  });
+  // Hoisted: `runtime` is a core plugin, so it is not a typed pluginConfigs key of
+  // createApp. A hoisted (non-fresh) object passes the check, and the kernel applies it.
+  const pluginConfigs = {
+    store: { name: "test-db" },
+    runtime: { forceKind: "web", forcePlatform: "macos" }
+  } as const;
+
+  const app = createApp({ plugins: [storePlugin], pluginConfigs });
   await app.start();
   const r = await app.store.set("k", 1);
   // r === { ok: true, value: undefined, provider: "web" }
@@ -570,7 +599,7 @@ Rules for extensions:
     onStart, dispose() in onStop.
 
 ====================================================================
-11. Peer dependencies & environment
+11. Peer dependencies, web bundling & environment
 ====================================================================
 
 Dependencies (bundled): @moku-labs/core 1.5.0, @moku-labs/common 0.3.0, idb-keyval 6.3.0.
@@ -584,8 +613,56 @@ imported inside Tauri providers; pure-web consumers skip them entirely:
   @tauri-apps/plugin-clipboard-manager   ^2.3.0    (clipboard)
   @tauri-apps/plugin-deep-link           ^2.4.0    (deepLink)
 
+Bundling for the web: every providers/index.ts reaches its Tauri provider through a lazy
+import("./tauri") — there is no static import of a @tauri-apps/* package anywhere outside
+providers/tauri.ts, so the native code sits in chunks a web build never executes. The
+bundler still has to RESOLVE the specifiers, so a web-only build either installs the
+optional peers or marks them external:
+
+  Bun:          Bun.build({ entrypoints: [...], external: ["@tauri-apps/*"] })
+  Vite/Rollup:  build: { rollupOptions: { external: /^@tauri-apps\// } }
+
 Environment: Node >= 24, Bun >= 1.3.14 (bun exclusively — never npm/yarn/pnpm).
 TypeScript strict mode with exactOptionalPropertyTypes and noUncheckedIndexedAccess.
 Tests: vitest, unit + integration projects, 90% coverage threshold; plugin tests are
 colocated in src/plugins/<name>/__tests__/{unit,integration}/; root tests/ is for
 framework-level integration only.
+
+====================================================================
+12. Native permissions (Tauri ACL) & cross-repo naming
+====================================================================
+
+A capability that reaches the OS needs a Tauri ACL permission in the app's capability
+file plus a Rust-side plugin. @moku-labs/native codegens exactly these — capability file,
+Cargo dependencies, plugin registrations — from the system plugins the app composes.
+
+  capability | ACL permissions                             | Rust
+  ---------- | ------------------------------------------- | -----------------------------
+  store      | store:default                               | tauri-plugin-store,
+             |                                             | tauri_plugin_store::Builder
+             |                                             | ::default().build()
+  notify     | notification:default                        | tauri-plugin-notification, init()
+  clipboard  | clipboard-manager:allow-read-text,          | tauri-plugin-clipboard-manager,
+             | clipboard-manager:allow-write-text          | init()
+  deepLink   | deep-link:default, core:event:default       | tauri-plugin-deep-link, init(),
+             |                                             | schemes in the Tauri config
+  tray       | core:tray:default, core:menu:default,       | no crate — Cargo features
+             | core:image:default, core:resources:default  | tray-icon + image-png,
+             |                                             | desktop targets only
+
+  - clipboard-manager:default grants NOTHING; the two allow-* permissions are the real
+    ones.
+  - The core:* entries (tray's four, and core:event:default) all ship inside core:default.
+  - Deep links on Windows/Linux additionally need single-instance forwarding, wired by
+    the packager.
+
+Cross-repo naming — @moku-labs/native keys its config.system by the Tauri plugin name,
+which is not always this framework's plugin name:
+
+  system plugin | native config.system
+  ------------- | --------------------
+  store         | store
+  notify        | notification
+  clipboard     | clipboard-manager
+  tray          | tray
+  deepLink      | deep-link

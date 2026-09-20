@@ -119,6 +119,8 @@ None — `notify` is pure request/response (`isPermissionGranted`/`requestPermis
 
 - **Dependencies:** none declared. `ctx.runtime` (provider selection) and `ctx.log` (error
   reporting) are core-plugin APIs, always injected — never a `depends` edge.
+- **Native permissions:** ACL `notification:default`; Rust side `tauri-plugin-notification` with
+  `init()`. `@moku-labs/native` codegens both from the `config.system` entry named `notification`.
 - **Packages:** `@tauri-apps/plugin-notification` is an *optional* peerDependency, reached only
   via a lazy dynamic import inside the Tauri provider factory — pure-web bundles never include it.
 - **Call `requestPermission()` from a user gesture:** browsers increasingly ignore or auto-deny

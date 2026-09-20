@@ -124,6 +124,9 @@ reported through `ctx.log.error` (`store:tauri-dispose-save-failed` /
 
 - **Dependencies:** none declared. `ctx.runtime` (provider selection) and `ctx.log` (error
   reporting) are core-plugin APIs, always injected — never a `depends` edge.
+- **Native permissions:** ACL `store:default`; Rust side `tauri-plugin-store` with
+  `tauri_plugin_store::Builder::default().build()`. `@moku-labs/native` codegens both from the
+  `config.system` entry named `store`.
 - **Packages:** `idb-keyval` is a regular dependency (dynamically imported only on the web path);
   `@tauri-apps/plugin-store` is an *optional* peerDependency, reached only via a lazy dynamic
   import inside the Tauri provider factory — pure-web bundles never include it.

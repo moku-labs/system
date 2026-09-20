@@ -144,6 +144,10 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
 
 - **Dependencies:** none declared. `ctx.runtime` (three-way selection, including the **platform**
   allowlist) and `ctx.log` are core-plugin APIs, always injected — never a `depends` edge.
+- **Native permissions:** ACL `core:tray:default`, `core:menu:default`, `core:image:default`,
+  `core:resources:default` — all part of `core:default`; Cargo features `tray-icon` + `image-png`,
+  desktop targets only. `@moku-labs/native` codegens both from the `config.system` entry named
+  `tray`.
 - **Packages:** `@tauri-apps/api` is an *optional* peerDependency, reached only from
   `providers/tauri.ts`, which is itself only loaded by a dynamic `import()` on the desktop
   branch — pure-web bundles never include it and never have to resolve the specifier.
