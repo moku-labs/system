@@ -1,6 +1,6 @@
 {
   "name": "@moku-labs/system",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Isomorphic system API for Moku — store, notify, clipboard, tray, and deep-link capabilities via an env-style provider pattern (Tauri provider when the shell is detected, web fallback otherwise). Same island code runs on web and native.",
   "type": "module",
   "main": "./dist/index.cjs",
