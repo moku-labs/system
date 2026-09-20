@@ -1,9 +1,12 @@
 /**
  * @file clipboard providers — resolver. Selection branches once on ctx.runtime.kind
- * inside the returned load closure (D-012); construction is delegated to ./tauri and ./web.
+ * inside the returned load closure (D-012); construction is delegated to ./tauri and
+ * ./web. Only ./web is statically imported: ./tauri is reached through a dynamic
+ * `import()`, so the `@tauri-apps/plugin-clipboard-manager` specifier stays in a
+ * code-split chunk a pure-web bundle never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { ClipboardContext } from "../types";
-import { createTauriClipboardProvider } from "./tauri";
 import type { ClipboardProvider } from "./types";
 import { createWebClipboardProvider } from "./web";
 
@@ -20,7 +23,10 @@ import { createWebClipboardProvider } from "./web";
  */
 export function loadClipboardProvider(ctx: ClipboardContext): () => Promise<ClipboardProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return () => createTauriClipboardProvider(ctx.log);
+    return requirePeer("clipboard-manager", "@tauri-apps/plugin-clipboard-manager", async () => {
+      const { createTauriClipboardProvider } = await import("./tauri");
+      return createTauriClipboardProvider(ctx.log);
+    });
   }
   return () => createWebClipboardProvider(ctx.log);
 }

@@ -19,7 +19,8 @@ const {
   mockDeepLinkGetCurrent,
   mockOnOpenUrl,
   mockUnlisten,
-  deepLinkHandlers
+  deepLinkHandlers,
+  mockDefaultWindowIcon
 } = vi.hoisted(() => {
   const mockStoreLoad = vi.fn(async (_path: string, _options?: unknown) => {
     const data = new Map<string, unknown>();
@@ -33,7 +34,8 @@ const {
       clear: async (): Promise<void> => {
         data.clear();
       },
-      save: async (): Promise<void> => undefined
+      save: async (): Promise<void> => undefined,
+      close: async (): Promise<void> => undefined
     };
   });
 
@@ -44,7 +46,9 @@ const {
     close: vi.fn(async () => undefined)
   };
   const mockTrayIconNew = vi.fn(async () => fakeTrayIcon);
-  const mockMenuNew = vi.fn(async () => ({}));
+  const mockMenuNew = vi.fn(async () => ({ close: vi.fn(async () => undefined) }));
+  // The status item is created with the app's default window icon unless tray.icon is set.
+  const mockDefaultWindowIcon = vi.fn(async () => ({ rid: 1 }));
 
   const mockIsPermissionGranted = vi.fn(async () => true);
   const mockRequestPermission = vi.fn(async () => "granted" as const);
@@ -75,13 +79,15 @@ const {
     mockDeepLinkGetCurrent,
     mockOnOpenUrl,
     mockUnlisten,
-    deepLinkHandlers
+    deepLinkHandlers,
+    mockDefaultWindowIcon
   };
 });
 
 vi.mock("@tauri-apps/plugin-store", () => ({ load: mockStoreLoad }));
 vi.mock("@tauri-apps/api/tray", () => ({ TrayIcon: { new: mockTrayIconNew } }));
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: mockMenuNew } }));
+vi.mock("@tauri-apps/api/app", () => ({ defaultWindowIcon: mockDefaultWindowIcon }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: mockIsPermissionGranted,
   requestPermission: mockRequestPermission,
@@ -137,6 +143,19 @@ function stubWebNotification(permission: "default" | "denied" | "granted" = "gra
   return { FakeNotification, instances };
 }
 
+/**
+ * Stub the webview `window.Notification` the Tauri plugin's `sendNotification`
+ * constructs — the shell path needs it exactly as the web path needs the bare global.
+ */
+function stubShellNotification() {
+  const instances: Array<{ title: string }> = [];
+  function FakeNotification(this: unknown, title: string, _options?: { body?: string }) {
+    instances.push({ title });
+  }
+  vi.stubGlobal("window", { Notification: FakeNotification });
+  return { instances };
+}
+
 /** Stub navigator.clipboard the clipboard web provider reads structurally. */
 function stubWebClipboard(text = "web clipboard text") {
   const readText = vi.fn(async () => text);
@@ -158,6 +177,9 @@ function flushDispatch(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   deepLinkHandlers.length = 0;
+  // Both shells run inside a webview: notify's Tauri path constructs
+  // `new window.Notification(...)`, so the global belongs in every scenario.
+  stubShellNotification();
 });
 
 afterEach(() => {
@@ -169,7 +191,7 @@ describe("framework: cross-plugin composition (integration)", () => {
     it("one app carries all five capabilities on their web providers", async () => {
       stubWebNotification("granted");
       const clipboard = stubWebClipboard("hello from web clipboard");
-      stubWebLocation("https://example.test/landing?ref=cross");
+      stubWebLocation("https://example.test/landing?deeplink=myapp%3A%2F%2Fcross&ref=cross");
 
       const app = buildSystemApp({
         runtime: { forceKind: "web" },
@@ -222,7 +244,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       // deepLink — getCurrent reflects the launch URL captured from the stubbed location
       expect(await app.deepLink.getCurrent()).toEqual({
         ok: true,
-        value: "https://example.test/landing?ref=cross",
+        value: "myapp://cross",
         provider: "web"
       });
 
@@ -392,7 +414,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       // No stubWebNotification here — Node has no Notification global, so the notify
       // web provider resolves to the all-unsupported stand-in while its siblings load fine.
       stubWebClipboard("isolated clipboard");
-      stubWebLocation("https://example.test/isolated");
+      stubWebLocation("https://example.test/isolated?deeplink=myapp%3A%2F%2Fisolated");
 
       const app = buildSystemApp({
         runtime: { forceKind: "web" },
@@ -423,7 +445,7 @@ describe("framework: cross-plugin composition (integration)", () => {
       });
       expect(await app.deepLink.getCurrent()).toEqual({
         ok: true,
-        value: "https://example.test/isolated",
+        value: "myapp://isolated",
         provider: "web"
       });
 

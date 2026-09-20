@@ -8,8 +8,15 @@ const createMockCtx = (overrides?: Partial<DeepLinkContext>): DeepLinkContext =>
   config: { schemes: [], ...overrides?.config },
   state:
     overrides?.state ??
-    // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
-    ({ provider: null, lastUrl: null, subscribers: new Set() } satisfies DeepLinkState),
+    ({
+      // eslint-disable-next-line unicorn/no-null -- DeepLinkState.provider is typed `Promise<...> | null` (seam contract)
+      provider: null,
+      handedOver: new Map(),
+      launchPhaseOpen: true,
+      // eslint-disable-next-line unicorn/no-null -- the deadline is unknown until the first launch-phase URL
+      launchPhaseEndsAt: null,
+      subscribers: new Set()
+    } satisfies DeepLinkState),
   emit: overrides?.emit ?? vi.fn(),
   global: overrides?.global ?? {},
   runtime: overrides?.runtime ?? { kind: "web", platform: "unknown" },
@@ -48,19 +55,38 @@ describe("createDeliver", () => {
       expect(ctx.emit).toHaveBeenCalledWith("deepLink:open", { url: "myapp://open" });
     });
 
-    it("does not update state.lastUrl for a scheme-filtered URL", () => {
+    it("does not touch the handover record for a scheme-filtered URL", () => {
       const ctx = createMockCtx({ config: { schemes: ["myapp"] } });
       const deliver = createDeliver(ctx);
 
       deliver("other://open");
 
-      expect(ctx.state.lastUrl).toBeNull();
+      expect(ctx.state.handedOver.size).toBe(0);
+      expect(ctx.state.launchPhaseOpen).toBe(true);
     });
   });
 
-  describe("dedup — the upstream getCurrent() replay-bug regression test", () => {
-    it("the same URL delivered twice results in exactly one emit and one subscriber notification", () => {
+  describe("launch handover — dedup the one-time replay, nothing else", () => {
+    it("drops the launch URL the first time it arrives (the replay after getCurrent read it)", () => {
       const ctx = createMockCtx();
+      ctx.state.handedOver.set("myapp://open", "get-current");
+      const deliver = createDeliver(ctx);
+      const subscriber = vi.fn();
+      ctx.state.subscribers.add(subscriber);
+
+      deliver("myapp://open");
+
+      expect(ctx.emit).not.toHaveBeenCalled();
+      expect(subscriber).not.toHaveBeenCalled();
+      expect(ctx.state.handedOver.has("myapp://open")).toBe(false);
+      expect(ctx.log.debug).toHaveBeenCalledWith("deepLink:launch-replay-dropped", {
+        url: "myapp://open"
+      });
+    });
+
+    it("delivers the same URL when it arrives again later — only the replay is dropped", () => {
+      const ctx = createMockCtx();
+      ctx.state.handedOver.set("myapp://open", "get-current");
       const deliver = createDeliver(ctx);
       const subscriber = vi.fn();
       ctx.state.subscribers.add(subscriber);
@@ -69,13 +95,21 @@ describe("createDeliver", () => {
       deliver("myapp://open");
 
       expect(ctx.emit).toHaveBeenCalledTimes(1);
+      expect(ctx.emit).toHaveBeenCalledWith("deepLink:open", { url: "myapp://open" });
       expect(subscriber).toHaveBeenCalledTimes(1);
-      expect(ctx.log.debug).toHaveBeenCalledWith("deepLink:delivery-deduped", {
-        url: "myapp://open"
-      });
     });
 
-    it("a different URL after the first is delivered normally (state.lastUrl advances)", () => {
+    it("delivers the same URL twice in a row when getCurrent never read a launch URL", () => {
+      const ctx = createMockCtx();
+      const deliver = createDeliver(ctx);
+
+      deliver("myapp://open");
+      deliver("myapp://open");
+
+      expect(ctx.emit).toHaveBeenCalledTimes(2);
+    });
+
+    it("delivers two different URLs, both of them", () => {
       const ctx = createMockCtx();
       const deliver = createDeliver(ctx);
 
@@ -85,18 +119,18 @@ describe("createDeliver", () => {
       expect(ctx.emit).toHaveBeenCalledTimes(2);
       expect(ctx.emit).toHaveBeenNthCalledWith(1, "deepLink:open", { url: "myapp://open" });
       expect(ctx.emit).toHaveBeenNthCalledWith(2, "deepLink:open", { url: "myapp://other" });
-      expect(ctx.state.lastUrl).toBe("myapp://other");
     });
 
-    it("re-delivering the previous URL after a newer one has arrived is treated as a new delivery", () => {
+    it("a delivery that is not the launch URL does not consume the launch URL's drop", () => {
       const ctx = createMockCtx();
+      ctx.state.handedOver.set("myapp://open", "get-current");
       const deliver = createDeliver(ctx);
 
-      deliver("myapp://a");
-      deliver("myapp://b");
-      deliver("myapp://a");
+      deliver("myapp://other");
+      deliver("myapp://open");
 
-      expect(ctx.emit).toHaveBeenCalledTimes(3);
+      expect(ctx.emit).toHaveBeenCalledTimes(1);
+      expect(ctx.emit).toHaveBeenCalledWith("deepLink:open", { url: "myapp://other" });
     });
   });
 

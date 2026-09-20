@@ -74,6 +74,7 @@ type NotifyOptions = {
 | Situation | Result |
 |-----------|--------|
 | Web: `Notification` global absent (SSR, insecure context, old browser) — every method | `err("web", "unsupported")` |
+| Tauri: `window.Notification` absent inside the shell — `show()` only | `err("tauri", "unavailable", "window.Notification is unavailable in this webview")` |
 | `show()` while permission is not granted (either provider) | `err(kind, "denied", "notification permission not granted")` — no prompt fires |
 | `requestPermission()` prompt answered with denied/dismissed | `ok(false)` — a **returned** permission value, deliberately not an error |
 | Provider resolution failed (`@tauri-apps/plugin-notification` import rejected) | `err(kind, "unavailable", message)` |
@@ -84,6 +85,16 @@ type NotifyOptions = {
 `"denied"` is produced only from the providers' own **returned** permission signals
 (`Notification.permission` / Tauri `isPermissionGranted()`), never guessed from a throw. Every
 caught error is also logged via `ctx.log.error` with a `notify:{web|tauri}-{method}-failed` key.
+
+**Permission caching (Tauri).** Each `isPermissionGranted()` plugin call is an IPC round-trip, so
+`show()` would pay one per notification. The Tauri provider caches **only a granted state**:
+permission is granted once and stays granted for the session, while a *not-granted* state is
+exactly what the user flips in OS settings while the app runs. So a `false` answer is never
+cached — the next `show()` reads through again and starts working the moment the user grants
+permission, with no restart and no explicit `isPermissionGranted()` call. `requestPermission()`
+replaces the cache with the prompt's answer (a non-granted answer clears it),
+`isPermissionGranted()` always reads through and refreshes it, and a thrown read is never cached.
+The web provider needs no cache — `Notification.permission` is a synchronous property.
 
 ## Configuration
 
@@ -101,15 +112,17 @@ None — `notify` is pure request/response (`isPermissionGranted`/`requestPermis
 |--------|-------|-----|
 | Backing API | `@tauri-apps/plugin-notification` (lazy import) | global `Notification` constructor |
 | Availability probe | none (import failure → `"unavailable"`) | factory-time feature probe; absent global → all methods `"unsupported"` |
-| Permission read | `isPermissionGranted()` plugin call | `Notification.permission === "granted"` |
-| Prompt | `requestPermission()` plugin call (returned value mapped to `ok(boolean)`) | `Notification.requestPermission()` (returned value mapped to `ok(boolean)`) |
-| `show()` guard | awaits `isPermissionGranted()` before `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
+| Permission read | `isPermissionGranted()` plugin call; only a **granted** answer is cached | `Notification.permission === "granted"` (a synchronous property read) |
+| Prompt | `requestPermission()` plugin call (returned value mapped to `ok(boolean)`, and it refreshes the cache) | `Notification.requestPermission()` (returned value mapped to `ok(boolean)`) |
+| `show()` guard | the cached granted state, re-read while not granted, then a `window.Notification` presence probe, then `sendNotification(options)` | reads `Notification.permission` before `new Notification(title, { body })` |
 | `dispose()` | no-op | no-op |
 
 ## Integration notes
 
 - **Dependencies:** none declared. `ctx.runtime` (provider selection) and `ctx.log` (error
   reporting) are core-plugin APIs, always injected — never a `depends` edge.
+- **Native permissions:** ACL `notification:default`; Rust side `tauri-plugin-notification` with
+  `init()`. `@moku-labs/native` codegens both from the `config.system` entry named `notification`.
 - **Packages:** `@tauri-apps/plugin-notification` is an *optional* peerDependency, reached only
   via a lazy dynamic import inside the Tauri provider factory — pure-web bundles never include it.
 - **Call `requestPermission()` from a user gesture:** browsers increasingly ignore or auto-deny

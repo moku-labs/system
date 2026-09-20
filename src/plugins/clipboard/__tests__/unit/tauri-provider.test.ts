@@ -71,6 +71,22 @@ describe("createTauriClipboardProvider", () => {
     expect(log.error).toHaveBeenCalledTimes(1);
   });
 
+  it("logs only the length of the text on a write failure, never the text itself", async () => {
+    mockWriteText.mockRejectedValue(new Error("clipboard-write not allowed"));
+    const log = createMockLog();
+    const provider = await createTauriClipboardProvider(log);
+
+    await provider.writeText("super-secret-token");
+
+    expect(log.error).toHaveBeenCalledWith(
+      "clipboard:tauri-write-failed",
+      { length: 18 },
+      expect.any(Error)
+    );
+    const loggedDetail = JSON.stringify(vi.mocked(log.error).mock.calls[0]?.[1]);
+    expect(loggedDetail).not.toContain("super-secret-token");
+  });
+
   it("wraps a non-Error throw into an Error for log.error while still mapping the result", async () => {
     mockReadText.mockRejectedValue("plain string rejection");
     const log = createMockLog();

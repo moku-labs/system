@@ -84,17 +84,23 @@ providers exist for both kinds). Every caught error is also logged via `ctx.log.
 
 ```ts
 type StoreConfig = {
-  /** Namespace for persisted data. Default: "moku-system". Validated non-empty at onInit. */
+  /** Namespace for persisted data. Default: "moku-system". File-safe, validated at onInit. */
   name: string;
 };
 ```
 
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `name` | `string` | `"moku-system"` | Namespace. Must match `/^[a-z0-9][a-z0-9._-]*$/i` — letters, digits, `.`, `-`, `_`, starting with a letter or digit. |
+
 `name` maps to the Tauri store filename (`${name}.json`) and the IndexedDB database name (with a
-fixed `"kv"` object store). An empty/whitespace string throws at `onInit`:
+fixed `"kv"` object store). Because it becomes a filename segment under `app_data_dir`, anything
+outside the pattern — an empty string, a path separator, a leading dot, `..` — is rejected at
+`onInit` instead of silently writing outside the app's data directory:
 
 ```
-[system] store.name must be a non-empty string.
-  Provide a name in pluginConfigs.
+[system] store.name must be a file-safe namespace — received "../../escape".
+  Use letters, digits, ".", "-" or "_" and start with a letter or digit, e.g. pluginConfigs: { store: { name: "my-app" } }.
 ```
 
 ## Events
@@ -108,12 +114,24 @@ None — `store` is pure request/response (`get`/`set`/`delete`/`keys`/`clear` v
 | Backing storage | `${name}.json` store file (`@tauri-apps/plugin-store`) | IndexedDB database `name`, object store `"kv"` (`idb-keyval`) |
 | Durability | `save()` awaited after every mutation (`autoSave: false`) | IndexedDB transaction commit |
 | Startup probe | none (store file load itself is the probe) | write-probe `set`+`del` of `__moku_probe__`; failure → `"unavailable"` |
-| `dispose()` | no-op | no-op |
+| `dispose()` | `save()` then `close()` — the loaded `Store` is a Tauri `Resource`, so its Rust-side handle is released at `app.stop()` | no-op |
+
+`dispose()` never rejects: a failing `save()` still runs the `close()`, and either failure is
+reported through `ctx.log.error` (`store:tauri-dispose-save-failed` /
+`store:tauri-dispose-close-failed`) rather than breaking the teardown chain. It is idempotent and
+final: `close()` frees the Rust-side handle, so on Tauri every method arriving after teardown
+answers `err("tauri", "unavailable", "app stopped")` instead of touching the freed resource — an
+island that outlives `app.stop()` gets the honest typed failure. The same rule holds for the other
+two providers whose teardown frees a native resource: `tray` (status item + menu — a call after
+teardown will NOT lazily recreate the icon) and `deep-link` (OS `onOpenUrl` listener).
 
 ## Integration notes
 
 - **Dependencies:** none declared. `ctx.runtime` (provider selection) and `ctx.log` (error
   reporting) are core-plugin APIs, always injected — never a `depends` edge.
+- **Native permissions:** ACL `store:default`; Rust side `tauri-plugin-store` with
+  `tauri_plugin_store::Builder::default().build()`. `@moku-labs/native` codegens both from the
+  `config.system` entry named `store`.
 - **Packages:** `idb-keyval` is a regular dependency (dynamically imported only on the web path);
   `@tauri-apps/plugin-store` is an *optional* peerDependency, reached only via a lazy dynamic
   import inside the Tauri provider factory — pure-web bundles never include it.

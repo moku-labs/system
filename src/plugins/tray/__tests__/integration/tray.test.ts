@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 // force-testing rule (runtime README): forcing kind "tauri" MUST be paired with
 // vi.mock of the real Tauri modules so provider construction never reaches a real
 // IPC call, even though only the "macos" scenario below actually exercises them.
-const { fakeTrayIcon, mockTrayIconNew, mockMenuNew } = vi.hoisted(() => {
+const { fakeTrayIcon, mockTrayIconNew, mockMenuNew, mockDefaultWindowIcon } = vi.hoisted(() => {
   const fakeTrayIcon = {
     setIcon: vi.fn(async () => undefined),
     setMenu: vi.fn(async () => undefined),
@@ -11,12 +11,14 @@ const { fakeTrayIcon, mockTrayIconNew, mockMenuNew } = vi.hoisted(() => {
     close: vi.fn(async () => undefined)
   };
   const mockTrayIconNew = vi.fn(async () => fakeTrayIcon);
-  const mockMenuNew = vi.fn(async () => ({}));
-  return { fakeTrayIcon, mockTrayIconNew, mockMenuNew };
+  const mockMenuNew = vi.fn(async () => ({ close: vi.fn(async () => undefined) }));
+  const mockDefaultWindowIcon = vi.fn(async () => ({ rid: 1 }));
+  return { fakeTrayIcon, mockTrayIconNew, mockMenuNew, mockDefaultWindowIcon };
 });
 
 vi.mock("@tauri-apps/api/tray", () => ({ TrayIcon: { new: mockTrayIconNew } }));
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: mockMenuNew } }));
+vi.mock("@tauri-apps/api/app", () => ({ defaultWindowIcon: mockDefaultWindowIcon }));
 
 import { coreConfig } from "../../../../config";
 import type { SystemErrorReason, SystemResult } from "../../../../index";
@@ -43,6 +45,7 @@ function buildTrayApp(overrides: { runtime?: Partial<RuntimeConfig>; tray?: Part
 beforeEach(() => {
   mockTrayIconNew.mockClear();
   mockMenuNew.mockClear();
+  mockDefaultWindowIcon.mockClear();
   fakeTrayIcon.setMenu.mockClear();
   fakeTrayIcon.setTooltip.mockClear();
   fakeTrayIcon.setIcon.mockClear();
@@ -103,6 +106,24 @@ describe("complex tier: tray plugin (integration)", () => {
   });
 
   describe("forceKind 'tauri' + forcePlatform 'macos' — the real desktop provider", () => {
+    it("a configured tray.icon reaches TrayIcon.new instead of the default window icon", async () => {
+      const app = buildTrayApp({
+        runtime: { forceKind: "tauri", forcePlatform: "macos" },
+        tray: { id: "custom-icon-tray", icon: "/Applications/My.app/Contents/Resources/tray.png" }
+      });
+      await app.start();
+
+      await app.tray.setTooltip("hi");
+
+      expect(mockTrayIconNew).toHaveBeenCalledWith({
+        id: "custom-icon-tray",
+        icon: "/Applications/My.app/Contents/Resources/tray.png"
+      });
+      expect(mockDefaultWindowIcon).not.toHaveBeenCalled();
+
+      await app.stop();
+    });
+
     it("ok path: setMenu/setTooltip/setIcon/destroy all succeed", async () => {
       const app = buildTrayApp({
         runtime: { forceKind: "tauri", forcePlatform: "macos" },
@@ -115,7 +136,10 @@ describe("complex tier: tray plugin (integration)", () => {
         value: undefined,
         provider: "tauri"
       });
-      expect(mockTrayIconNew).toHaveBeenCalledWith({ id: "macos-test-tray" });
+      expect(mockTrayIconNew).toHaveBeenCalledWith({
+        id: "macos-test-tray",
+        icon: { rid: 1 }
+      });
       expect(await app.tray.setTooltip("hover")).toEqual({
         ok: true,
         value: undefined,

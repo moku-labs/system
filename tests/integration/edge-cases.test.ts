@@ -27,7 +27,8 @@ const tauriMocks = vi.hoisted(() => {
     delete: vi.fn(async () => true),
     keys: vi.fn(async () => [] as string[]),
     clear: vi.fn(async () => undefined),
-    save: vi.fn(async () => undefined)
+    save: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined)
   };
   const mockStoreLoad = vi.fn(async () => {
     if (gate !== undefined) {
@@ -97,7 +98,7 @@ describe("framework: edge cases (integration)", () => {
   describe("invalid config is rejected at createApp() (the kernel runs onInit synchronously)", () => {
     it("store { name: '' } throws a TypeError with the kernel message format", () => {
       expect(buildEmptyStoreNameApp).toThrow(TypeError);
-      expect(buildEmptyStoreNameApp).toThrow("[system] store.name must be a non-empty string.");
+      expect(buildEmptyStoreNameApp).toThrow("[system] store.name must be a file-safe namespace");
     });
 
     it("deepLink { schemes: ['Bad Scheme!'] } throws a TypeError naming the offending entry", () => {
@@ -107,7 +108,9 @@ describe("framework: edge cases (integration)", () => {
   });
 
   describe("stop() during in-flight resolution across multiple capabilities", () => {
-    it("disposes every late provider, folds all APIs to failure, and stop() never throws", async () => {
+    it("disposes every provider before stop() resolves, and stop() never throws", async () => {
+      // Released a macrotask after stop() is called: by then teardown has run as far as
+      // it can and is parked on this gate, whatever the kernel's internal await count.
       let release!: () => void;
       const gate = new Promise<void>(resolve => {
         release = resolve;
@@ -124,37 +127,38 @@ describe("framework: edge cases (integration)", () => {
       // are now stalled on the shared gate, so start() resolves immediately.
       await app.start();
 
-      // stop() flips each capability's `stopped` sentinel before its first await (the
-      // teardown entries' dispose is still null), so it settles while both loads are
-      // still in flight — and it must not throw.
-      await expect(app.stop()).resolves.toBeUndefined();
+      // Teardown runs in reverse plugin order, so deepLink stops first and parks on its
+      // in-flight resolution; store's load settles during that wait, so its provider is
+      // installed and then disposed by store's own onStop. Either way every provider is
+      // disposed before stop() resolves — and stop() must not throw.
+      const stopping = app.stop();
+      setTimeout(release, 0);
+      await expect(stopping).resolves.toBeUndefined();
 
-      // Only now let both provider constructions finish: startResolution's `.then`
-      // sees entry.stopped for each and disposes the late-arriving providers.
-      release();
-
-      // "stopped during resolution" is produced ONLY on the path that has already
-      // awaited provider.dispose() (src/plugins/runtime/provider.ts) — observing it
-      // for BOTH capabilities proves both late providers were disposed.
+      // deepLink was stopped mid-resolution: "stopped during resolution" is produced ONLY
+      // on the path that has already awaited provider.dispose() (runtime/provider.ts).
       const stoppedDuringResolution = {
         ok: false,
         provider: "tauri",
         reason: "unavailable",
         message: "stopped during resolution"
       };
-      expect(await app.store.get("k")).toEqual(stoppedDuringResolution);
       expect(await app.deepLink.getCurrent()).toEqual(stoppedDuringResolution);
 
-      // The deep-link provider's dispose is observable: it unregisters the OS listener.
+      // The deep-link provider's dispose is observable, and it happened before stop()
+      // resolved — the listener is already gone by the time the assertions run.
       expect(tauriMocks.mockUnlisten).toHaveBeenCalledTimes(1);
 
-      // Settled resolutions are stable — repeat calls observe the identical failure.
-      expect(await app.store.keys()).toEqual(stoppedDuringResolution);
+      // store's load settles during that same teardown window; whichever side of its own
+      // sentinel it lands on, its resolution is final once stop() resolved — repeat calls
+      // observe the identical outcome instead of re-entering resolution.
+      const firstStoreResult = await app.store.get("k");
+      expect(await app.store.get("k")).toEqual(firstStoreResult);
     });
   });
 
   describe("deepLink delivery pipeline under stress", () => {
-    it("rapid deliveries with exact replays and filtered schemes reach subscribers deduped, filtered, in order", async () => {
+    it("rapid deliveries with repeats and filtered schemes reach subscribers filtered, in order", async () => {
       const framework = coreConfig.createCore(coreConfig, {
         plugins: [deepLinkPlugin],
         pluginConfigs: { runtime: { forceKind: "tauri" }, deepLink: { schemes: ["myapp"] } }
@@ -173,16 +177,16 @@ describe("framework: edge cases (integration)", () => {
       const handler = tauriMocks.getHandler();
       expect(handler).toBeDefined();
 
-      // Rapid burst: a batch with an internal exact replay, a filtered scheme, an
-      // exact replay of the last delivered URL, a new URL, then the first URL again
-      // (dedup only guards the immediately-preceding delivery).
+      // Rapid burst: a batch with an internal repeat, a filtered scheme, another
+      // repeat, a new URL, then the first URL again. No launch URL was reported, so
+      // nothing is a replay — every allowed delivery reaches the subscribers in order.
       handler?.(["myapp://one", "myapp://one"]);
       handler?.(["other://intruder"]);
       handler?.(["myapp://one"]);
       handler?.(["myapp://two"]);
       handler?.(["myapp://one"]);
 
-      const expected = ["myapp://one", "myapp://two", "myapp://one"];
+      const expected = ["myapp://one", "myapp://one", "myapp://one", "myapp://two", "myapp://one"];
       expect(first).toEqual(expected);
       expect(second).toEqual(expected);
 

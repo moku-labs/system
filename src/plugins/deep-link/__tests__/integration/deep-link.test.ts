@@ -95,7 +95,50 @@ describe("complex tier: deepLink plugin (integration)", () => {
       await app.stop();
     });
 
-    it("a replayed URL (identical to the last delivered) does not deliver a second time", async () => {
+    it("the launch URL replayed onto the fresh listener is dropped exactly once", async () => {
+      mockGetCurrent.mockResolvedValue(["myapp://launch"]);
+      const observed: ObservedEvent[] = [];
+      const app = buildDeepLinkApp({ runtime: { forceKind: "tauri" } }, observed);
+      await app.start();
+      // The app reads the launch URL, exactly as an island would at boot.
+      expect(await app.deepLink.getCurrent()).toEqual({
+        ok: true,
+        value: "myapp://launch",
+        provider: "tauri"
+      });
+      const received: ObservedEvent[] = [];
+      app.deepLink.onOpen(payload => received.push(payload));
+
+      const handler = getHandler();
+      // The OS replays the same URL onto the listener — the app must not route twice.
+      handler?.(["myapp://launch"]);
+
+      expect(received).toHaveLength(0);
+      expect(observed).toHaveLength(0);
+
+      await app.stop();
+    });
+
+    it("the same URL opened again after the replay IS delivered", async () => {
+      mockGetCurrent.mockResolvedValue(["myapp://launch"]);
+      const observed: ObservedEvent[] = [];
+      const app = buildDeepLinkApp({ runtime: { forceKind: "tauri" } }, observed);
+      await app.start();
+      await app.deepLink.getCurrent();
+      const received: ObservedEvent[] = [];
+      app.deepLink.onOpen(payload => received.push(payload));
+
+      const handler = getHandler();
+      handler?.(["myapp://launch"]);
+      handler?.(["myapp://launch"]);
+
+      expect(received).toEqual([{ url: "myapp://launch" }]);
+      expect(observed).toEqual([{ url: "myapp://launch" }]);
+
+      await app.stop();
+    });
+
+    it("a repeat delivery of the same URL with no launch URL involved is delivered twice", async () => {
       const observed: ObservedEvent[] = [];
       const app = buildDeepLinkApp({ runtime: { forceKind: "tauri" } }, observed);
       await app.start();
@@ -107,13 +150,12 @@ describe("complex tier: deepLink plugin (integration)", () => {
       handler?.(["myapp://open"]);
       handler?.(["myapp://open"]);
 
-      expect(received).toHaveLength(1);
-      expect(observed).toHaveLength(1);
+      expect(received).toEqual([{ url: "myapp://open" }, { url: "myapp://open" }]);
 
       await app.stop();
     });
 
-    it("a different URL after the first is still delivered (dedup only guards the exact same URL)", async () => {
+    it("two different URLs are both delivered", async () => {
       const observed: ObservedEvent[] = [];
       const app = buildDeepLinkApp({ runtime: { forceKind: "tauri" } }, observed);
       await app.start();

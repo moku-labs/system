@@ -5,6 +5,7 @@
 
 import type { LogApi } from "@moku-labs/common";
 import type { PluginCtx } from "@moku-labs/core";
+import type { Config } from "../../config";
 import type { ResolutionState } from "../runtime/provider";
 import type { SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
@@ -21,6 +22,15 @@ import type { TrayProvider } from "./providers/types";
 export type TrayConfig = {
   /** OS-level tray identity. Validated non-empty at onInit. Default: "moku-system". */
   id: string;
+  /**
+   * Status-item image: a path the app process can read, or the raw bytes of one —
+   * every form the native tray takes except its own `Image` resource, which is a
+   * `@tauri-apps/api` type this package never puts in its public surface. Omit it to
+   * use the app's default window icon (the packager's bundle icon) — the reliable
+   * default, since a relative path is resolved against the process working directory,
+   * which a bundled app does not control.
+   */
+  icon?: string | Uint8Array | number[];
 };
 
 /**
@@ -57,7 +67,7 @@ export type TrayState = ResolutionState<TrayProvider>;
  * Internal domain context — global/runtime/log extensions (spec/15 §6; not part of the public contract).
  */
 export type TrayContext = PluginCtx<TrayConfig, TrayState> & {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly runtime: RuntimeApi;
   readonly log: LogApi;
 };

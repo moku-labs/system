@@ -141,6 +141,64 @@ describe("createWebClipboardProvider", () => {
       });
     });
 
+    it("a DOMException-shaped throw (name only, no DOMException class) maps readText to 'denied'", async () => {
+      // Webviews without a DOMException global still reject with a `.name`-carrying
+      // object — the duck-type is what makes the denial recognizable there.
+      const notAllowed = Object.assign(new Error("Write permission denied"), {
+        name: "NotAllowedError"
+      });
+      const readText = vi.fn(async () => {
+        throw notAllowed;
+      });
+      const writeText = vi.fn(async () => undefined);
+      vi.stubGlobal("navigator", { clipboard: { readText, writeText } });
+      const log = createMockLog();
+      const provider = await createWebClipboardProvider(log);
+
+      const result = await provider.readText();
+
+      expect(result).toEqual({
+        ok: false,
+        provider: "web",
+        reason: "denied",
+        message: "Write permission denied"
+      });
+      expect(log.error).not.toHaveBeenCalled();
+    });
+
+    it("a plain-object throw carrying name 'NotAllowedError' maps writeText to 'denied'", async () => {
+      const readText = vi.fn(async () => "");
+      const writeText = vi.fn(async () => {
+        throw { name: "NotAllowedError", message: "blocked" };
+      });
+      vi.stubGlobal("navigator", { clipboard: { readText, writeText } });
+      const provider = await createWebClipboardProvider(createMockLog());
+
+      const result = await provider.writeText("hi");
+
+      expect(result).toEqual({
+        ok: false,
+        provider: "web",
+        reason: "denied",
+        message: "blocked"
+      });
+    });
+
+    it("a throw whose name is not NotAllowedError still maps to 'error'", async () => {
+      const readText = vi.fn(async () => {
+        throw Object.assign(new Error("gone"), { name: "NotFoundError" });
+      });
+      const writeText = vi.fn(async () => undefined);
+      vi.stubGlobal("navigator", { clipboard: { readText, writeText } });
+      const log = createMockLog();
+      const provider = await createWebClipboardProvider(log);
+
+      const result = await provider.readText();
+
+      expect(result).toEqual({ ok: false, provider: "web", reason: "error", message: "gone" });
+      expect(log.error).toHaveBeenCalledTimes(1);
+    });
+
     it("a generic throw on readText maps to 'error' and logs it", async () => {
       const readText = vi.fn(async () => {
         throw new Error("boom");

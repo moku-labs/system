@@ -11,10 +11,12 @@ once, at provider-resolution time; islands never branch on the runtime themselve
 Detection is import-free and SSR-safe: `detect.ts` touches `globalThis`/`navigator` only inside
 function bodies, so importing this module under Node never throws.
 
-- `kind` — `"tauri"` when the Tauri 2 shell marker (`__TAURI_INTERNALS__`) is present on
-  `globalThis`, `"web"` otherwise.
+- `kind` — `"tauri"` when either Tauri 2 shell marker is present on `globalThis`: the public
+  `isTauri === true` flag or the internal `__TAURI_INTERNALS__` bridge. `"web"` otherwise.
 - `platform` — from `navigator.userAgent` heuristics, checking device markers before broader OS
-  markers (Android UA contains "Linux"; iOS UA contains "like Mac OS X"). `"unknown"` is the
+  markers (Android UA contains "Linux"; iOS UA contains "like Mac OS X"). An iPad in desktop
+  mode reports a Macintosh UA, so a Macintosh UA that also reports `maxTouchPoints > 1` is
+  `"ios"` — that is what keeps desktop-only capabilities (`tray`) off an iPad. `"unknown"` is the
   honest fallback, including SSR where `navigator` is absent.
 
 **Directory exception (D-008, user-approved):** this directory also hosts the framework's shared
@@ -41,11 +43,11 @@ core directly. Consumer tests make detection deterministic by stubbing the envir
 **before** `app.start()` instead:
 
 ```ts
-// Force "tauri": define the shell marker detectKind() reads (pair with @tauri-apps/* mocks).
-vi.stubGlobal("__TAURI_INTERNALS__", {});
-// Force a platform: stub the user-agent detectPlatform() reads.
-vi.stubGlobal("navigator", { userAgent: "...Macintosh..." });
-// Force "web": simply run without the marker (the default in vitest/Node).
+// Force "tauri": define a shell marker detectKind() reads (pair with @tauri-apps/* mocks).
+vi.stubGlobal("__TAURI_INTERNALS__", {}); // or: vi.stubGlobal("isTauri", true)
+// Force a platform: stub the navigator detectPlatform() reads.
+vi.stubGlobal("navigator", { userAgent: "...Macintosh...", maxTouchPoints: 0 });
+// Force "web": simply run without the markers (the default in vitest/Node).
 ```
 
 **Force-testing rule:** forcing `forcePlatform` alone is safe standalone. Forcing `forceKind: "tauri"`
@@ -133,8 +135,27 @@ across all five capabilities from one implementation:
   folds every `load()` rejection into the promise as an `"unavailable"` failure (the `onStart`
   body never throws); if the app stops mid-resolution, the late-arriving provider is disposed
   immediately and the promise resolves to `err(kind, "unavailable", "stopped during resolution")`.
-- **`stopResolution(capability, ctx)`** — the uniform `onStop` one-liner: flips the stopped
-  sentinel and awaits the resolved provider's `dispose()`.
+  The `load` closure is where each capability reaches its Tauri provider module through a
+  dynamic `import("./tauri")` — nothing outside `providers/tauri.ts` names `@tauri-apps/*`
+  statically, so a pure-web bundle never has to resolve those specifiers.
+- **`requirePeer(nativeName, peer, load)`** — wraps that `load` closure, so a missing optional
+  `@tauri-apps/*` peer fails with a message that names the package instead of a raw
+  `"Failed to fetch dynamically imported module …"`: `@tauri-apps/plugin-store is not installed.
+  Add it to the app, or list "store" in @moku-labs/native config.system.` The wrapper only
+  reacts to a module-resolution failure (including one re-wrapped by a bundler in its own error's
+  `cause`); a fault raised inside a module that did load propagates untouched. The named
+  `@moku-labs/native` entry is the Tauri plugin name, not this framework's plugin name (`notify` →
+  `notification`, `clipboard` → `clipboard-manager`).
+- **`stopResolution(capability, ctx, timeoutMs?)`** — the uniform `onStop` one-liner: flips the
+  stopped sentinel, waits for a resolution still in flight (its folded failure is never rethrown),
+  then awaits the resolved provider's `dispose()`. So `app.stop()` resolves only once every
+  provider — including one that arrived late — has been disposed and its listeners are gone.
+  The wait is **bounded** (default 5000 ms, injectable for tests): a dynamic import that never
+  settles would otherwise hang `app.stop()` forever. On timeout the capability is reported through
+  `ctx.log.warn("runtime:stop-resolution-timeout", { capability, timeoutMs })` — the logger is
+  captured at `startResolution`, since `onStop`'s `TeardownContext` is `{ global }` only — and
+  teardown moves on. The stopped sentinel outlives the call, so a provider that arrives after the
+  timeout still disposes itself instead of installing into a stopped app.
 - **`awaitProvider(state, kind)`** — awaited by every capability API method. A `null` slot (app
   never started) resolves to `err(kind, "unavailable", "app not started — call app.start() first")`
   instead of throwing.

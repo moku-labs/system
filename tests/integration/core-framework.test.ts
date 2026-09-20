@@ -48,7 +48,7 @@ function createFakeNotificationCtor(permission: "default" | "denied" | "granted"
 }
 
 /** Stub every browser global the five web providers touch (Notification, navigator.clipboard, location). */
-function stubWebGlobals(launchHref = "https://example.test/launch") {
+function stubWebGlobals(launchHref = "https://example.test/launch?deeplink=myapp%3A%2F%2Flaunch") {
   const { FakeNotification, shown } = createFakeNotificationCtor("granted");
   vi.stubGlobal("Notification", FakeNotification);
   vi.stubGlobal("navigator", {
@@ -119,7 +119,7 @@ describe("framework: core lifecycle across all capabilities (integration)", () =
 
       expect(await app.deepLink.getCurrent()).toEqual({
         ok: true,
-        value: "https://example.test/launch",
+        value: "myapp://launch",
         provider: "web"
       });
 
@@ -174,9 +174,12 @@ describe("framework: core lifecycle across all capabilities (integration)", () =
     });
 
     it("deepLink.schemes filter applies: a non-matching launch URL is filtered to null", async () => {
-      vi.stubGlobal("location", { href: "other://launch?x=1" });
+      // The page hands the app a deep link explicitly; its scheme is not in the allowlist.
+      vi.stubGlobal("location", {
+        href: "https://example.test/landing?deeplink=other%3A%2F%2Flaunch%3Fx%3D1"
+      });
 
-      // Control app (no schemes filter) sees the raw launch URL...
+      // Control app (no schemes filter) sees the deep link the page carried...
       const unfiltered = createApp({ plugins: [deepLinkPlugin] });
       await unfiltered.start();
       expect(await unfiltered.deepLink.getCurrent()).toEqual({

@@ -1,10 +1,12 @@
 /**
  * @file store providers — resolver. Selection branches once on ctx.runtime.kind (D-012);
- * construction is delegated to ./tauri and ./web. Both are statically imported (SSR-safe);
- * the lazy boundary that matters is inside tauri.ts's dynamic `@tauri-apps/plugin-store` import.
+ * construction is delegated to ./tauri and ./web. Only ./web is statically imported:
+ * ./tauri is reached through a dynamic `import()` inside the load closure, so the
+ * `@tauri-apps/plugin-store` specifier stays in a code-split chunk a pure-web bundle
+ * never has to resolve.
  */
+import { requirePeer } from "../../runtime/provider";
 import type { StoreContext } from "../types";
-import { createTauriStoreProvider } from "./tauri";
 import type { StoreProvider } from "./types";
 import { createWebStoreProvider } from "./web";
 
@@ -21,7 +23,10 @@ import { createWebStoreProvider } from "./web";
  */
 export function loadStoreProvider(ctx: StoreContext): () => Promise<StoreProvider> {
   if (ctx.runtime.kind === "tauri") {
-    return () => createTauriStoreProvider(ctx.config, ctx.log);
+    return requirePeer("store", "@tauri-apps/plugin-store", async () => {
+      const { createTauriStoreProvider } = await import("./tauri");
+      return createTauriStoreProvider(ctx.config, ctx.log);
+    });
   }
   return () => createWebStoreProvider(ctx.config, ctx.log);
 }

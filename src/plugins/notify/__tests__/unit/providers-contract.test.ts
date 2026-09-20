@@ -49,7 +49,12 @@ describe.each<{ kind: "tauri" | "web"; createProvider: () => Promise<NotifyProvi
   },
   {
     kind: "tauri",
-    createProvider: () => createTauriNotifyProvider(createMockLog())
+    createProvider: () => {
+      // plugin-notification's sendNotification constructs `new window.Notification(...)`,
+      // so the Tauri path needs the webview global just as the web path does.
+      vi.stubGlobal("window", { Notification: FakeNotificationCtor });
+      return createTauriNotifyProvider(createMockLog());
+    }
   }
 ])("provider parity: $kind", ({ kind, createProvider }) => {
   it("exposes every NOTIFY_METHODS entry as a function, plus dispose", async () => {

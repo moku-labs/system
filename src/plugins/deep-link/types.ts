@@ -5,6 +5,7 @@
 
 import type { LogApi } from "@moku-labs/common";
 import type { PluginCtx } from "@moku-labs/core";
+import type { Config } from "../../config";
 import type { ResolutionState } from "../runtime/provider";
 import type { SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
@@ -40,17 +41,43 @@ export type DeepLinkEvents = {
 export type Unsubscribe = () => void;
 
 /**
- * Internal deep-link state — resolution slot + dedup guard + island subscribers.
+ * Millisecond clock backing the launch phase. Injectable so tests can cross the window
+ * boundary without timers.
  *
  * @example
  * ```ts
- * { provider: null, lastUrl: null, subscribers: new Set() }
+ * const deliver = createDeliver(ctx, () => fakeNow);
+ * ```
+ */
+export type Clock = () => number;
+
+/**
+ * Which path first handed a launch-phase URL to the app — the record `createDeliver`
+ * and `getCurrent()` share so each launch URL reaches the app exactly once.
+ *
+ * @example
+ * ```ts
+ * state.handedOver.get("myapp://open"); // "get-current" | "on-open" | undefined
+ * ```
+ */
+export type HandoverPath = "get-current" | "on-open";
+
+/**
+ * Internal deep-link state — resolution slot + launch-phase handover record + subscribers.
+ *
+ * @example
+ * ```ts
+ * { provider: null, handedOver: new Map(), launchPhaseOpen: true, launchPhaseEndsAt: null, subscribers: new Set() }
  * ```
  */
 export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
-  /** Last delivered URL — dedup guard against the upstream getCurrent() replay bug. */
-  lastUrl: string | null;
-  /** onOpen() callbacks, notified after dedup + scheme filtering. */
+  /** Launch-phase URLs already handed to the app, keyed by the path that handed them over. */
+  handedOver: Map<string, HandoverPath>;
+  /** Whether the launch phase is still running (it ends early, or on the clock). */
+  launchPhaseOpen: boolean;
+  /** Clock deadline of the launch phase; null until the first launch-phase URL is seen. */
+  launchPhaseEndsAt: number | null;
+  /** onOpen() callbacks, notified after the handover guard + scheme filtering. */
   subscribers: Set<(payload: { url: string }) => void>;
 };
 
@@ -58,7 +85,7 @@ export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
  * Internal domain context — carries DeepLinkEvents so ctx.emit is strictly typed (spec/15 §6).
  */
 export type DeepLinkContext = PluginCtx<DeepLinkConfig, DeepLinkState, DeepLinkEvents> & {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly runtime: RuntimeApi;
   readonly log: LogApi;
 };

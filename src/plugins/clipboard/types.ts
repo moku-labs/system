@@ -5,6 +5,7 @@
 
 import type { LogApi } from "@moku-labs/common";
 import type { PluginCtx } from "@moku-labs/core";
+import type { Config } from "../../config";
 import type { ResolutionState } from "../runtime/provider";
 import type { SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
@@ -24,7 +25,7 @@ export type ClipboardState = ResolutionState<ClipboardProvider>;
  * Internal domain context — global/runtime/log extensions (spec/15 §6; not part of the public contract).
  */
 export type ClipboardContext = PluginCtx<Record<string, never>, ClipboardState> & {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly runtime: RuntimeApi;
   readonly log: LogApi;
 };

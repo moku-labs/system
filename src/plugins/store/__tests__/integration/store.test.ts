@@ -22,7 +22,43 @@ describe("complex tier: store plugin (integration)", () => {
           plugins: [storePlugin],
           pluginConfigs: { store: { name: "" } }
         })
-      ).toThrow("[system] store.name must be a non-empty string.");
+      ).toThrow("[system] store.name must be a file-safe namespace");
+    });
+
+    it("onInit throws when store.name contains path traversal", () => {
+      expect(() =>
+        createApp({
+          plugins: [storePlugin],
+          pluginConfigs: { store: { name: "../../escape" } }
+        })
+      ).toThrow('received "../../escape"');
+    });
+
+    it("onInit throws when store.name contains a path separator", () => {
+      expect(() =>
+        createApp({
+          plugins: [storePlugin],
+          pluginConfigs: { store: { name: "nested/name" } }
+        })
+      ).toThrow("[system] store.name must be a file-safe namespace");
+    });
+
+    it("onInit throws when store.name starts with a dot", () => {
+      expect(() =>
+        createApp({
+          plugins: [storePlugin],
+          pluginConfigs: { store: { name: ".hidden" } }
+        })
+      ).toThrow("[system] store.name must be a file-safe namespace");
+    });
+
+    it("onInit accepts letters, digits, dots, dashes and underscores in any case", () => {
+      const app = createApp({
+        plugins: [storePlugin],
+        pluginConfigs: { store: { name: "My.App_1-v2" } }
+      });
+
+      expect(app.store).toBeDefined();
     });
 
     it("onInit succeeds with the default name", () => {

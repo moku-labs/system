@@ -5,6 +5,7 @@
 
 import type { LogApi } from "@moku-labs/common";
 import type { PluginCtx } from "@moku-labs/core";
+import type { Config } from "../../config";
 import type { ResolutionState } from "../runtime/provider";
 import type { JsonValue, SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
@@ -19,7 +20,7 @@ import type { StoreProvider } from "./providers/types";
  * ```
  */
 export type StoreConfig = {
-  /** Namespace for persisted data. Validated non-empty at onInit. Default: "moku-system". */
+  /** Namespace for persisted data. File-safe, validated at onInit. Default: "moku-system". */
   name: string;
 };
 
@@ -38,7 +39,7 @@ export type StoreState = ResolutionState<StoreProvider>;
  * Internal domain context — global/runtime/log extensions (spec/15 §6; not part of the public contract).
  */
 export type StoreContext = PluginCtx<StoreConfig, StoreState> & {
-  readonly global: Readonly<Record<string, unknown>>;
+  readonly global: Readonly<Config>;
   readonly runtime: RuntimeApi;
   readonly log: LogApi;
 };

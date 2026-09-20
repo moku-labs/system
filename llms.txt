@@ -23,7 +23,10 @@ Full reference: llms-full.txt
 - Each capability plugin resolves its provider from that detection at app.start(),
   fire-and-forget: resolution failures fold into the NEXT method call's result, never
   into a startup throw.
-- Overridable for tests via pluginConfigs: { runtime: { forceKind, forcePlatform } }.
+- Overridable via pluginConfigs: { runtime: { forceKind, forcePlatform } }. It IS applied
+  when passed to createApp (consumer config wins the core-plugin cascade), but `runtime`
+  is not one of createApp's TYPED pluginConfigs keys — hoist the object instead of
+  inlining it (see "Forcing the runtime").
 - Island/consumer code must NEVER branch on the runtime itself — the plugin does.
 
 ### 2. The SystemResult contract (typed outcomes, never throws)
@@ -72,6 +75,14 @@ SystemErrorReason / RuntimeKind / RuntimePlatform / JsonValue / JsonPrimitive.
 dependencies — dynamically imported only inside Tauri providers when the native shell
 is detected. Pure-web consumers do not install them.
 
+Bundling for the web: each providers/index.ts reaches its Tauri provider through a lazy
+import("./tauri"), so @tauri-apps/* lands in chunks a web build never executes — but the
+bundler still has to RESOLVE the specifiers. Either install the optional peers, or mark
+them external:
+
+    Bun:          Bun.build({ ..., external: ["@tauri-apps/*"] })
+    Vite/Rollup:  build: { rollupOptions: { external: /^@tauri-apps\// } }
+
 ## Quick reference
 
 ### Create and start an app
@@ -89,6 +100,12 @@ is detected. Pure-web consumers do not install them.
 
 Calling a method before start() resolves to
 { ok: false, reason: "unavailable", message: "app not started — call app.start() first" }.
+After stop(), a provider that freed a native resource (store, tray, deepLink) resolves to
+{ ok: false, reason: "unavailable", message: "app stopped" }. stop() itself is bounded: it
+waits at most 5000 ms for an in-flight resolution, warns, and moves on.
+A missing optional @tauri-apps/* peer is reported by name:
+'@tauri-apps/plugin-store is not installed. Add it to the app, or list "store" in
+@moku-labs/native config.system.'
 
 ### Per-capability one-liners
 
@@ -132,13 +149,14 @@ Calling a method before start() resolves to
 
 ### Forcing the runtime (tests)
 
-    createApp({
-      plugins: [storePlugin],
-      pluginConfigs: {
-        store: { name: "test-db" },
-        runtime: { forceKind: "web", forcePlatform: "macos" }
-      }
-    });
+    // Hoisted: `runtime` is a core plugin, so it is not a typed pluginConfigs key of
+    // createApp. A hoisted (non-fresh) object passes the check, and the kernel applies it.
+    const pluginConfigs = {
+      store: { name: "test-db" },
+      runtime: { forceKind: "web", forcePlatform: "macos" }
+    } as const;
+
+    createApp({ plugins: [storePlugin], pluginConfigs });
 
 ### Extending (consumer plugin)
 
@@ -160,20 +178,53 @@ One line each: purpose | tier | API | events.
               web IndexedDB via idb-keyval with one-time write-probe | Complex |
               get/set/delete/keys/clear; config { name } default "moku-system" | no events
 - tray      — desktop tray icon + menu, created lazily on first mutating call; web and
-              Tauri-mobile are all-unsupported | Complex |
-              setMenu/setTooltip/setIcon/destroy; config { id } default "moku-system" | no events
+              Tauri-mobile are all-unsupported (desktop allowlist: macos/windows/linux) |
+              Complex | setMenu/setTooltip/setIcon/destroy; config { id, icon? } defaults
+              "moku-system" and, with no icon, the app's default window icon | no events
 - notify    — OS/browser notifications, explicit permission flow (show never
               auto-prompts) | Complex | show/requestPermission/isPermissionGranted;
               NO config | no events
 - clipboard — text clipboard; feature-probed, NotAllowedError -> "denied" | Complex |
               readText/writeText; NO config | no events
-- deepLink  — deep-link URL delivery, the only push-driven capability; dedups upstream
-              getCurrent() replay | Complex | getCurrent/onOpen(cb): Unsubscribe;
+- deepLink  — deep-link URL delivery, the only push-driven capability; dedups ONLY the
+              one-time launch replay (a later repeat of the same URL is delivered); on the
+              web getCurrent() reads an explicit ?deeplink= / #deeplink= parameter off the
+              page URL, else ok(null) | Complex | getCurrent/onOpen(cb): Unsubscribe;
               config { schemes } default [] (empty = accept all, lowercase scheme
               pattern validated at onInit) | event "deepLink:open" { url: string }
 
 Naming: plugin name string "deepLink", directory src/plugins/deep-link/, subpath
 "@moku-labs/system/deep-link", event "deepLink:open".
+
+## Native permissions
+
+A capability that reaches the OS needs a Tauri ACL permission in the app's capability file
+plus a Rust-side plugin. @moku-labs/native codegens exactly these from the system plugins
+the app composes.
+
+    capability | ACL permissions                             | Rust
+    store      | store:default                               | tauri-plugin-store,
+               |                                             | Builder::default().build()
+    notify     | notification:default                        | tauri-plugin-notification, init()
+    clipboard  | clipboard-manager:allow-read-text,          | tauri-plugin-clipboard-manager,
+               | clipboard-manager:allow-write-text          | init()
+    deepLink   | deep-link:default, core:event:default       | tauri-plugin-deep-link, init(),
+               |                                             | schemes in the Tauri config
+    tray       | core:tray:default, core:menu:default,       | no crate — Cargo features
+               | core:image:default, core:resources:default  | tray-icon + image-png, desktop only
+
+- clipboard-manager:default grants NOTHING; the two allow-* permissions are the real ones.
+- The core:* entries (tray's four, and core:event:default) all ship inside core:default.
+- Deep links on Windows/Linux also need single-instance forwarding, wired by the packager.
+
+Cross-repo naming — @moku-labs/native keys config.system by the Tauri plugin name:
+
+    system plugin | native config.system
+    store         | store
+    notify        | notification
+    clipboard     | clipboard-manager
+    tray          | tray
+    deepLink      | deep-link
 
 ## File structure
 
@@ -189,6 +240,9 @@ Naming: plugin name string "deepLink", directory src/plugins/deep-link/, subpath
       result.ts                  SystemResult contract + ok/err helpers (public)
       provider.ts                resolution lifecycle (internal, not exported)
       detect.ts                  sync, import-free shell/platform detection
+    src/plugins/index.ts         barrel of plugin instances + type namespaces; the map of
+                                 the source tree, NOT a package entry — src/index.ts does
+                                 not import it (that is what keeps the root instance-free)
     src/plugins/<name>/          each capability: index.ts (createPlugin spec),
       api.ts, state.ts, types.ts, providers/{index,web,tauri,types}.ts,
       __tests__/{unit,integration}/

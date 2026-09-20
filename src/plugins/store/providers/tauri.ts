@@ -6,7 +6,7 @@
  */
 import type { LogApi } from "@moku-labs/common";
 import type { JsonValue, SystemResult } from "../../runtime/result";
-import { mapThrownToResult, ok } from "../../runtime/result";
+import { err, mapThrownToResult, ok } from "../../runtime/result";
 import type { StoreConfig } from "../types";
 import type { StoreProvider } from "./types";
 
@@ -47,6 +47,11 @@ export async function createTauriStoreProvider(
   // type (2.4.x) — empty object is correct: store contents are seeded by set(), never defaults.
   const store = await load(`${config.name}.json`, { defaults: {}, autoSave: false });
 
+  // dispose() closes the underlying Store Resource, so its rid is gone on the Rust
+  // side. A call that arrives after that must not reach for a freed handle — an island
+  // that outlives app.stop() gets the honest typed failure instead.
+  let disposed = false;
+
   return {
     /**
      * Read a value from the store file. ok(undefined) when the key is absent.
@@ -59,6 +64,9 @@ export async function createTauriStoreProvider(
      * ```
      */
     get: async <T extends JsonValue>(key: string): Promise<SystemResult<T | undefined>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         const value = await store.get<T>(key);
         return ok(value, PROVIDER);
@@ -80,6 +88,9 @@ export async function createTauriStoreProvider(
      * ```
      */
     set: async (key: string, value: JsonValue): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         await store.set(key, value);
         await store.save();
@@ -101,6 +112,9 @@ export async function createTauriStoreProvider(
      * ```
      */
     delete: async (key: string): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         await store.delete(key);
         await store.save();
@@ -121,6 +135,9 @@ export async function createTauriStoreProvider(
      * ```
      */
     keys: async (): Promise<SystemResult<string[]>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         const list = await store.keys();
         return ok(list, PROVIDER);
@@ -140,6 +157,9 @@ export async function createTauriStoreProvider(
      * ```
      */
     clear: async (): Promise<SystemResult<void>> => {
+      if (disposed) {
+        return err(PROVIDER, "unavailable", "app stopped");
+      }
       try {
         await store.clear();
         await store.save();
@@ -151,14 +171,34 @@ export async function createTauriStoreProvider(
     },
 
     /**
-     * Teardown — no-op; there is no OS artifact to release for the store file provider.
+     * Teardown — flush pending writes, then release the underlying `Store` Resource so
+     * its Rust-side handle is dropped at app.stop(). Never rejects: a failing save must
+     * not skip the close, and a failing close must not break the teardown chain; both
+     * are reported through ctx.log instead. Idempotent, and every method that arrives
+     * afterwards reports `err("tauri", "unavailable", "app stopped")` rather than
+     * touching the freed rid.
      *
-     * @returns {Promise<void>} Resolves immediately.
+     * @returns {Promise<void>} Resolves once the store is flushed and closed.
      * @example
      * ```ts
      * await provider.dispose();
      * ```
      */
-    dispose: (): Promise<void> => Promise.resolve()
+    dispose: async (): Promise<void> => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      try {
+        await store.save();
+      } catch (error) {
+        log.error("store:tauri-dispose-save-failed", undefined, toError(error));
+      }
+      try {
+        await store.close();
+      } catch (error) {
+        log.error("store:tauri-dispose-close-failed", undefined, toError(error));
+      }
+    }
   };
 }

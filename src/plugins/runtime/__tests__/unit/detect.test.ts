@@ -15,6 +15,16 @@ describe("detectKind", () => {
   it("returns web when __TAURI_INTERNALS__ is absent", () => {
     expect(detectKind()).toBe("web");
   });
+
+  it("returns tauri when the shell sets globalThis.isTauri to true", () => {
+    vi.stubGlobal("isTauri", true);
+    expect(detectKind()).toBe("tauri");
+  });
+
+  it("ignores an isTauri value that is not exactly true", () => {
+    vi.stubGlobal("isTauri", "yes");
+    expect(detectKind()).toBe("web");
+  });
 });
 
 describe("detectPlatform", () => {
@@ -47,5 +57,23 @@ describe("detectPlatform", () => {
   it("returns unknown for an unrecognized user agent", () => {
     vi.stubGlobal("navigator", { userAgent: "SomeExoticBot/1.0" });
     expect(detectPlatform()).toBe("unknown");
+  });
+
+  it("returns ios for a Macintosh user agent reporting touch points (iPadOS desktop mode)", () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+      maxTouchPoints: 5
+    });
+    expect(detectPlatform()).toBe("ios");
+  });
+
+  it("keeps macos for a Macintosh user agent with no touch points", () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+      maxTouchPoints: 0
+    });
+    expect(detectPlatform()).toBe("macos");
   });
 });
