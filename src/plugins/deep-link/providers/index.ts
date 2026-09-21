@@ -20,7 +20,7 @@ import { createWebDeepLinkProvider } from "./web";
  * @returns {() => Promise<DeepLinkProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution("deepLink", ctx.runtime.kind, ctx, loadDeepLinkProvider(ctx, createDeliver(ctx)));
+ * startResolution(ctx.runtime.kind, ctx, loadDeepLinkProvider(ctx, createDeliver(ctx)));
  * ```
  */
 export function loadDeepLinkProvider(

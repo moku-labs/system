@@ -21,8 +21,8 @@ function bodies, so importing this module under Node never throws.
 
 **Directory exception (D-008, user-approved):** this directory also hosts the framework's shared
 seam modules — `result.ts` (public `SystemResult<T>` contract, re-exported via `src/index.ts`) and
-`provider.ts` (internal resolution-lifecycle helper + per-app teardown registry keyed by the frozen
-`ctx.global`, D-009). Sibling capability plugins import them via `../runtime/*`. These are pure,
+`provider.ts` (internal resolution-lifecycle helper; its teardown entry lives in each capability's
+own plugin state). Sibling capability plugins import them via `../runtime/*`. These are pure,
 stateless helper modules — not cross-plugin state access.
 
 ## Configuration
@@ -130,7 +130,7 @@ NOT exported from `src/index.ts` — internal machinery, free to evolve. Owns th
 resolution lifecycle so "no synchronous `onStart` throw" and teardown safety are load-bearing
 across all five capabilities from one implementation:
 
-- **`startResolution(capability, kind, ctx, load)`** — fire-and-forget, called from each
+- **`startResolution(kind, ctx, load)`** — fire-and-forget, called from each
   capability's `onStart`. Synchronously stores an unawaited promise in `ctx.state.provider`;
   folds every `load()` rejection into the promise as an `"unavailable"` failure (the `onStart`
   body never throws); if the app stops mid-resolution, the late-arriving provider is disposed
@@ -153,13 +153,14 @@ across all five capabilities from one implementation:
   The wait is **bounded** (default 5000 ms, injectable for tests): a dynamic import that never
   settles would otherwise hang `app.stop()` forever. On timeout the capability is reported through
   `ctx.log.warn("runtime:stop-resolution-timeout", { capability, timeoutMs })` — the logger is
-  captured at `startResolution`, since `onStop`'s `TeardownContext` is `{ global }` only — and
+  captured at `startResolution`, since `onStop`'s `TeardownContext` carries no core plugin APIs — and
   teardown moves on. The stopped sentinel outlives the call, so a provider that arrives after the
   timeout still disposes itself instead of installing into a stopped app.
 - **`awaitProvider(state, kind)`** — awaited by every capability API method. A `null` slot (app
   never started) resolves to `err(kind, "unavailable", "app not started — call app.start() first")`
   instead of throwing.
 
-The teardown registry is a `WeakMap` keyed by the app's frozen global config object (`ctx.global`,
-decision D-009) — present in both `onStart` and `onStop`, so multiple app instances never share
-resolution state.
+The teardown entry lives in the capability's own state (`state.teardown`). `startResolution` writes
+it in `onStart` and `stopResolution` reads it in `onStop`, which receives `{ global, config, state }`
+since kernel 1.6. Each app instance has its own state, so instances never share resolution state.
+This replaces the module-scope `WeakMap` of decision D-009.

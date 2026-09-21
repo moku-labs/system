@@ -18,7 +18,7 @@ import { createWebStoreProvider } from "./web";
  * @returns {() => Promise<StoreProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution("store", ctx.runtime.kind, ctx, loadStoreProvider(ctx));
+ * startResolution(ctx.runtime.kind, ctx, loadStoreProvider(ctx));
  * ```
  */
 export function loadStoreProvider(ctx: StoreContext): () => Promise<StoreProvider> {

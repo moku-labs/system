@@ -18,7 +18,7 @@ import { createWebClipboardProvider } from "./web";
  * @returns {() => Promise<ClipboardProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution("clipboard", ctx.runtime.kind, ctx, loadClipboardProvider(ctx));
+ * startResolution(ctx.runtime.kind, ctx, loadClipboardProvider(ctx));
  * ```
  */
 export function loadClipboardProvider(ctx: ClipboardContext): () => Promise<ClipboardProvider> {

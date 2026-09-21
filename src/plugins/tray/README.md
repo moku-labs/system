@@ -164,7 +164,7 @@ None — `tray` is pure request/response (`setMenu`/`setTooltip`/`setIcon`/`dest
   an `action`. The provider keeps a single menu alive and closes the replaced one on each
   `setMenu`, so a periodically refreshed menu does not accumulate handles. Concurrent
   `setMenu` calls are safe: they queue, and the last one issued is the one left showing.
-- **`app.stop()` cleans up:** the teardown registry awaits the provider's `dispose()`, so a tray
+- **`app.stop()` cleans up:** `stopResolution` awaits the provider's `dispose()`, so a tray
   icon created during the session is removed on orderly shutdown.
 - **Testing:** the web branch needs no mocks (`forceKind: "web"`). Exercising the desktop branch
   requires `vi.mock("@tauri-apps/api/tray")` + `vi.mock("@tauri-apps/api/menu")` alongside

@@ -18,7 +18,7 @@ import { createWebNotifyProvider } from "./web";
  * @returns {() => Promise<NotifyProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution("notify", ctx.runtime.kind, ctx, loadNotifyProvider(ctx));
+ * startResolution(ctx.runtime.kind, ctx, loadNotifyProvider(ctx));
  * ```
  */
 export function loadNotifyProvider(ctx: NotifyContext): () => Promise<NotifyProvider> {

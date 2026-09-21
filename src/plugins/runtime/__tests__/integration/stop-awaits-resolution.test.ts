@@ -40,7 +40,6 @@ describe("app.stop() with a provider resolution in flight", () => {
        */
       onStart: ctx => {
         startResolution(
-          "probe",
           ctx.runtime.kind,
           ctx,
           () =>
@@ -53,7 +52,7 @@ describe("app.stop() with a provider resolution in flight", () => {
        * Tear down through the shared seam helper, releasing the load only once the stop
        * sentinel is set — so the resolution is genuinely in flight at that moment.
        *
-       * @param {object} ctx - Teardown context (global only).
+       * @param {object} ctx - Teardown context (global + own config and state).
        * @returns {Promise<void>} Resolves once teardown completed.
        * @example
        * ```ts

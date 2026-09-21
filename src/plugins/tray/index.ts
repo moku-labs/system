@@ -52,7 +52,7 @@ export const trayPlugin = createPlugin(PLUGIN_NAME, {
    * ```
    */
   onStart: ctx => {
-    startResolution(PLUGIN_NAME, ctx.runtime.kind, ctx, loadTrayProvider(ctx));
+    startResolution(ctx.runtime.kind, ctx, loadTrayProvider(ctx));
   },
   /**
    * Await the in-flight resolution, then dispose the provider — that closes the OS tray

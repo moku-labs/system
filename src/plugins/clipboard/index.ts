@@ -32,7 +32,7 @@ export const clipboardPlugin = createPlugin(PLUGIN_NAME, {
    * ```
    */
   onStart: ctx => {
-    startResolution(PLUGIN_NAME, ctx.runtime.kind, ctx, loadClipboardProvider(ctx));
+    startResolution(ctx.runtime.kind, ctx, loadClipboardProvider(ctx));
   },
   /**
    * Await the in-flight resolution, then dispose the provider — the resource `onStart` opened.
