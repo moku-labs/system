@@ -128,8 +128,8 @@
     "vitest": "4.0.18"
   },
   "dependencies": {
-    "@moku-labs/common": "0.3.0",
-    "@moku-labs/core": "1.5.0",
+    "@moku-labs/common": "0.3.2",
+    "@moku-labs/core": "1.6.0",
     "idb-keyval": "6.3.0"
   },
   "peerDependencies": {
