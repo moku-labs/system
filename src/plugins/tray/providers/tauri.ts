@@ -369,7 +369,7 @@ export async function createTauriTrayProvider(
    * cached promise so the next mutating call recreates it lazily. Awaits (and
    * clears) any in-flight creation first so a destroy racing a concurrent first-call
    * creation still ends up with no leaked handle, and NEVER throws — so
-   * `destroy()`/`dispose()` (and the teardown registry that awaits `dispose()` at
+   * `destroy()`/`dispose()` (and `stopResolution`, which awaits `dispose()` at
    * `app.stop()`) always resolve cleanly even after a prior creation failure.
    *
    * @returns {Promise<void>} Resolves once teardown completes.

@@ -30,10 +30,9 @@ function createMockLog(): LogApi {
 /** Test helper — the onStart context slice startResolution consumes. */
 function createStartCtx<P extends CapabilityProvider>(
   state: ResolutionState<P>,
-  global: object = {},
   log: LogApi = createMockLog()
-): { readonly global: object; state: ResolutionState<P>; readonly log: LogApi } {
-  return { global, state, log };
+): { state: ResolutionState<P>; readonly log: LogApi } {
+  return { state, log };
 }
 
 /**
@@ -74,9 +73,7 @@ function createStalledLoad(): {
 describe("startResolution", () => {
   it("synchronously stores an unawaited promise on state.provider", () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    startResolution("store", "web", createStartCtx(state), () =>
-      Promise.resolve(createFakeProvider("p1"))
-    );
+    startResolution("web", createStartCtx(state), () => Promise.resolve(createFakeProvider("p1")));
     expect(state.provider).not.toBeNull();
     expect(state.provider).toBeInstanceOf(Promise);
   });
@@ -84,16 +81,14 @@ describe("startResolution", () => {
   it("resolves ok:true with the loaded provider on success", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
     const provider = createFakeProvider("p1");
-    startResolution("store", "web", createStartCtx(state), () => Promise.resolve(provider));
+    startResolution("web", createStartCtx(state), () => Promise.resolve(provider));
     await expect(state.provider).resolves.toEqual({ ok: true, provider });
   });
 
   it("folds a load() rejection into an unavailable failure instead of throwing", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
     expect(() =>
-      startResolution("store", "web", createStartCtx(state), () =>
-        Promise.reject(new Error("boom"))
-      )
+      startResolution("web", createStartCtx(state), () => Promise.reject(new Error("boom")))
     ).not.toThrow();
     await expect(state.provider).resolves.toEqual({
       ok: false,
@@ -103,16 +98,15 @@ describe("startResolution", () => {
 
   it("disposes a late-arriving provider and yields a stopped failure when stopped mid-resolution", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     let resolveLoad: ((provider: FakeProvider) => void) | undefined;
     const load = () =>
       new Promise<FakeProvider>(resolve => {
         resolveLoad = resolve;
       });
-    startResolution("store", "web", createStartCtx(state, global), load);
+    startResolution("web", createStartCtx(state), load);
     // stopResolution runs synchronously up to its first await, so the sentinel is set
     // before the load below completes — and it stays pending until teardown finished.
-    const stopped = stopResolution("store", { global });
+    const stopped = stopResolution("store", { state });
 
     const dispose = vi.fn(() => Promise.resolve());
     resolveLoad?.(createFakeProvider("late", dispose));
@@ -134,30 +128,29 @@ describe("startResolution", () => {
 describe("stopResolution", () => {
   it("flips the stopped sentinel and awaits the resolved provider's dispose", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     const dispose = vi.fn(() => Promise.resolve());
-    startResolution("store", "web", createStartCtx(state, global), () =>
+    startResolution("web", createStartCtx(state), () =>
       Promise.resolve(createFakeProvider("p1", dispose))
     );
     await state.provider;
 
-    await stopResolution("store", { global });
+    await stopResolution("store", { state });
 
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it("is a no-op when no entry is registered for the capability", async () => {
-    await expect(stopResolution("nonexistent", { global: {} })).resolves.toBeUndefined();
+    await expect(
+      stopResolution("nonexistent", { state: { provider: null } })
+    ).resolves.toBeUndefined();
   });
 
   it("resolves only after an in-flight resolution disposed its late-arriving provider", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     let resolveLoad: ((provider: FakeProvider) => void) | undefined;
     startResolution(
-      "store",
       "web",
-      createStartCtx(state, global),
+      createStartCtx(state),
       () =>
         new Promise<FakeProvider>(resolve => {
           resolveLoad = resolve;
@@ -173,7 +166,7 @@ describe("stopResolution", () => {
     });
     // stopResolution runs synchronously up to its first await, so the stopped sentinel is
     // already set when the load below completes — the resolution is genuinely in flight.
-    const stopped = stopResolution("store", { global }).then(() => order.push("stopped"));
+    const stopped = stopResolution("store", { state }).then(() => order.push("stopped"));
     resolveLoad?.(createFakeProvider("late", dispose));
     await stopped;
 
@@ -182,19 +175,17 @@ describe("stopResolution", () => {
 
   it("swallows a load() rejection that is still in flight when stop is called", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     let rejectLoad: ((error: Error) => void) | undefined;
     startResolution(
-      "store",
       "web",
-      createStartCtx(state, global),
+      createStartCtx(state),
       () =>
         new Promise<FakeProvider>((_resolve, reject) => {
           rejectLoad = reject;
         })
     );
 
-    const stopped = stopResolution("store", { global });
+    const stopped = stopResolution("store", { state });
     rejectLoad?.(new Error("boom"));
 
     await expect(stopped).resolves.toBeUndefined();
@@ -209,13 +200,12 @@ describe("stopResolution — bounded wait", () => {
   it("gives up on a resolution that never settles instead of hanging app.stop()", async () => {
     vi.useFakeTimers();
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     const log = createMockLog();
     const { load } = createStalledLoad();
-    startResolution("store", "web", createStartCtx(state, global, log), load);
+    startResolution("web", createStartCtx(state, log), load);
 
     let finished = false;
-    const stopped = stopResolution("store", { global }).then(() => {
+    const stopped = stopResolution("store", { state }).then(() => {
       finished = true;
     });
 
@@ -230,12 +220,11 @@ describe("stopResolution — bounded wait", () => {
   it("warns with the capability and the elapsed budget when the wait times out", async () => {
     vi.useFakeTimers();
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     const log = createMockLog();
     const { load } = createStalledLoad();
-    startResolution("store", "web", createStartCtx(state, global, log), load);
+    startResolution("web", createStartCtx(state, log), load);
 
-    const stopped = stopResolution("store", { global }, 25);
+    const stopped = stopResolution("store", { state }, 25);
     await vi.advanceTimersByTimeAsync(25);
     await stopped;
 
@@ -248,12 +237,11 @@ describe("stopResolution — bounded wait", () => {
   it("still disposes a provider that arrives after the wait timed out", async () => {
     vi.useFakeTimers();
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     const dispose = vi.fn(() => Promise.resolve());
     const { load, arrive } = createStalledLoad();
-    startResolution("store", "web", createStartCtx(state, global), load);
+    startResolution("web", createStartCtx(state), load);
 
-    const stopped = stopResolution("store", { global }, 25);
+    const stopped = stopResolution("store", { state }, 25);
     await vi.advanceTimersByTimeAsync(25);
     await stopped;
     expect(dispose).not.toHaveBeenCalled();
@@ -275,14 +263,13 @@ describe("stopResolution — bounded wait", () => {
   it("does not warn — and leaves no pending timer — when the resolution settles in time", async () => {
     vi.useFakeTimers();
     const state: ResolutionState<FakeProvider> = { provider: null };
-    const global = {};
     const log = createMockLog();
-    startResolution("store", "web", createStartCtx(state, global, log), () =>
+    startResolution("web", createStartCtx(state, log), () =>
       Promise.resolve(createFakeProvider("p1"))
     );
     await state.provider;
 
-    await stopResolution("store", { global });
+    await stopResolution("store", { state });
 
     expect(log.warn).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
@@ -356,24 +343,22 @@ describe("requirePeer", () => {
 });
 
 describe("per-app isolation", () => {
-  it("keeps two distinct frozen global objects as independent registry entries", async () => {
-    const globalA = Object.freeze({ id: "a" });
-    const globalB = Object.freeze({ id: "b" });
+  it("keeps the teardown entries of two app instances independent (one per plugin state)", async () => {
     const stateA: ResolutionState<FakeProvider> = { provider: null };
     const stateB: ResolutionState<FakeProvider> = { provider: null };
     const disposeA = vi.fn(() => Promise.resolve());
     const disposeB = vi.fn(() => Promise.resolve());
 
-    startResolution("store", "web", createStartCtx(stateA, globalA), () =>
+    startResolution("web", createStartCtx(stateA), () =>
       Promise.resolve(createFakeProvider("a", disposeA))
     );
-    startResolution("store", "web", createStartCtx(stateB, globalB), () =>
+    startResolution("web", createStartCtx(stateB), () =>
       Promise.resolve(createFakeProvider("b", disposeB))
     );
     await stateA.provider;
     await stateB.provider;
 
-    await stopResolution("store", { global: globalA });
+    await stopResolution("store", { state: stateA });
 
     expect(disposeA).toHaveBeenCalledTimes(1);
     expect(disposeB).not.toHaveBeenCalled();
@@ -396,9 +381,7 @@ describe("awaitProvider", () => {
 
   it("returns the stored resolution promise once resolution has started", async () => {
     const state: ResolutionState<FakeProvider> = { provider: null };
-    startResolution("store", "web", createStartCtx(state), () =>
-      Promise.resolve(createFakeProvider("p1"))
-    );
+    startResolution("web", createStartCtx(state), () => Promise.resolve(createFakeProvider("p1")));
 
     const resolved = await awaitProvider(state, "web");
 

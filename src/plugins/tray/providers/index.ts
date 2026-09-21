@@ -31,7 +31,7 @@ const DESKTOP_PLATFORMS = new Set<RuntimePlatform>(["macos", "windows", "linux"]
  * @returns {() => Promise<TrayProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution("tray", ctx.runtime.kind, ctx, loadTrayProvider(ctx));
+ * startResolution(ctx.runtime.kind, ctx, loadTrayProvider(ctx));
  * ```
  */
 export function loadTrayProvider(ctx: TrayContext): () => Promise<TrayProvider> {

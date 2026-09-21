@@ -1,10 +1,9 @@
 /**
  * @file Resolution-lifecycle helper — INTERNAL seam module (not exported from src/index.ts).
  * Owns fire-and-forget provider loading (rejections folded, never a sync onStart throw,
- * spec/06 §3/§5) and the per-app teardown registry. The registry is keyed by the app's
- * FROZEN GLOBAL CONFIG object: ctx.global is frozen once per createApp (spec/06 §2 step 5)
- * and present in both onStart (PluginContext) and onStop (TeardownContext = { global }),
- * so it is a phase-legitimate per-app-instance key (D-009).
+ * spec/06 §3/§5) and the teardown bookkeeping. The bookkeeping lives in the capability's
+ * OWN plugin state: since kernel 1.6 onStop receives { global, config, state },
+ * so teardown reads the entry onStart wrote there and no module-scope registry is needed.
  */
 
 import type { LogApi } from "@moku-labs/common";
@@ -30,13 +29,8 @@ export type ResolvedProvider<P extends CapabilityProvider> =
   | { ok: true; provider: P }
   | { ok: false; failure: SystemError };
 
-/** The state slot every capability plugin embeds. null until onStart runs. */
-export type ResolutionState<P extends CapabilityProvider> = {
-  provider: Promise<ResolvedProvider<P>> | null;
-};
-
 /** Bookkeeping entry for one capability's in-flight or completed resolution. */
-type TeardownEntry = {
+export type TeardownEntry = {
   stopped: boolean;
   dispose: (() => Promise<void>) | null;
   /**
@@ -46,63 +40,42 @@ type TeardownEntry = {
   settled: Promise<ResolvedProvider<CapabilityProvider>> | null;
   /**
    * The capability's logger, captured at startResolution. onStop's TeardownContext is
-   * `{ global }` only (spec/06 §3), so teardown has no ctx.log of its own — and family
-   * convention MC2 forbids reaching for console instead.
+   * `{ global, config, state }` (spec/06 §3): it carries no core plugin APIs, so teardown
+   * has no ctx.log of its own — and family convention MC2 forbids reaching for console.
    */
   log: LogApi;
 };
 
 /**
- * Per-app teardown registries, keyed by the app's frozen global config object
- * (decision D-009) so multiple app instances never share resolution state.
+ * The state slot every capability plugin embeds. `provider` is null until onStart runs.
+ * `teardown` is absent until startResolution writes it, and removed again by stopResolution.
  */
-const registries = new WeakMap<object, Map<string, TeardownEntry>>();
-
-/**
- * Get (or lazily create) the teardown registry for one app instance.
- *
- * @param {object} appGlobal - The app's frozen global config (per-app registry key).
- * @returns The capability-keyed teardown registry for this app.
- * @example
- * ```ts
- * const registry = getRegistry(ctx.global);
- * ```
- */
-function getRegistry(appGlobal: object): Map<string, TeardownEntry> {
-  const existing = registries.get(appGlobal);
-  if (existing !== undefined) {
-    return existing;
-  }
-  const created = new Map<string, TeardownEntry>();
-  registries.set(appGlobal, created);
-  return created;
-}
+export type ResolutionState<P extends CapabilityProvider> = {
+  provider: Promise<ResolvedProvider<P>> | null;
+  teardown?: TeardownEntry;
+};
 
 /**
  * Kick off fire-and-forget provider resolution from a capability's onStart.
  * Synchronously stores an unawaited promise in ctx.state.provider; folds every load()
- * rejection into the promise as an "unavailable" failure; registers the teardown entry;
- * disposes a late-arriving provider if the app already stopped.
+ * rejection into the promise as an "unavailable" failure; writes the teardown entry into
+ * ctx.state.teardown; disposes a late-arriving provider if the app already stopped.
  *
- * @param {string} capability - Plugin name (registry key within the app).
  * @param {RuntimeKind} kind - Selected provider kind (for failure results).
- * @param {object} ctx - onStart context slice: { global, state, log }.
- * @param {object} ctx.global - Frozen global config (per-app registry key).
+ * @param {object} ctx - onStart context slice: { state, log }.
  * @param {object} ctx.state - The capability's resolution slot.
  * @param {LogApi} ctx.log - The capability's logger, kept for teardown (MC2).
  * @param {() => Promise<P>} load - Async provider factory; selection happens inside it.
  * @example
  * ```ts
- * onStart: (ctx) => { startResolution("store", ctx.runtime.kind, ctx, loadStoreProvider(ctx)); }
+ * onStart: (ctx) => { startResolution(ctx.runtime.kind, ctx, loadStoreProvider(ctx)); }
  * ```
  */
 export function startResolution<P extends CapabilityProvider>(
-  capability: string,
   kind: RuntimeKind,
-  ctx: { readonly global: object; state: ResolutionState<P>; readonly log: LogApi },
+  ctx: { state: ResolutionState<P>; readonly log: LogApi },
   load: () => Promise<P>
 ): void {
-  const registry = getRegistry(ctx.global);
   const entry: TeardownEntry = {
     stopped: false,
     // eslint-disable-next-line unicorn/no-null -- dispose is null until the provider resolves (TeardownEntry contract)
@@ -111,7 +84,7 @@ export function startResolution<P extends CapabilityProvider>(
     settled: null,
     log: ctx.log
   };
-  registry.set(capability, entry);
+  ctx.state.teardown = entry;
 
   const resolution = load()
     .then(async (provider): Promise<ResolvedProvider<P>> => {
@@ -160,20 +133,20 @@ async function settleWithin(settled: Promise<unknown> | null, timeoutMs: number)
 }
 
 /**
- * Teardown from a capability's onStop (TeardownContext — { global } only).
- * Flips the stopped sentinel, waits (bounded) for an in-flight resolution so a
- * late-arriving provider is disposed before app.stop() resolves — its load() rejection
- * is already folded into a failure result, never rethrown here — then awaits the
- * resolved provider's dispose().
+ * Teardown from a capability's onStop (TeardownContext — { global, config, state }).
+ * Reads the entry startResolution wrote into the plugin's own state. Flips the stopped
+ * sentinel, waits (bounded) for an in-flight resolution so a late-arriving provider is
+ * disposed before app.stop() resolves — its load() rejection is already folded into a
+ * failure result, never rethrown here — then awaits the resolved provider's dispose().
  *
  * The wait is bounded because a dynamic import that never settles would otherwise hang
  * app.stop() forever. On timeout the capability is logged at warn and teardown moves on;
  * the stopped sentinel outlives this call, so a provider arriving later still disposes
  * itself instead of installing into a stopped app.
  *
- * @param {string} capability - Plugin name used at startResolution.
- * @param {object} ctx - Teardown context: { global }.
- * @param {object} ctx.global - Frozen global config (per-app registry key).
+ * @param {string} capability - Plugin name, used in the timeout warning.
+ * @param {object} ctx - Teardown context slice: { state }.
+ * @param {object} ctx.state - The capability's resolution slot.
  * @param {number} [timeoutMs] - How long to wait for an in-flight resolution. Default 5000.
  * @returns A promise that resolves once teardown completes.
  * @example
@@ -181,13 +154,12 @@ async function settleWithin(settled: Promise<unknown> | null, timeoutMs: number)
  * onStop: (ctx) => stopResolution("store", ctx)
  * ```
  */
-export async function stopResolution(
+export async function stopResolution<P extends CapabilityProvider>(
   capability: string,
-  ctx: { readonly global: object },
+  ctx: { state: ResolutionState<P> },
   timeoutMs: number = STOP_TIMEOUT_MS
 ): Promise<void> {
-  const registry = registries.get(ctx.global);
-  const entry = registry?.get(capability);
+  const entry = ctx.state.teardown;
   if (entry === undefined) {
     return;
   }
@@ -200,7 +172,7 @@ export async function stopResolution(
   }
 
   await entry.dispose?.();
-  registry?.delete(capability);
+  delete ctx.state.teardown;
 }
 
 /**
