@@ -24,6 +24,15 @@ const RESUMED_EVENT = "tauri://resumed";
 /** Log key for a native event channel that could not be opened. */
 const EVENTS_UNAVAILABLE = "lifecycle:tauri-events-unavailable";
 
+/** Log key for a native unlisten that threw or rejected at dispose. */
+const UNLISTEN_FAILED = "lifecycle:tauri-unlisten-failed";
+
+/**
+ * Remove one native listener. `UnlistenFn` is typed `() => void` in `@tauri-apps/api` 2.x, but
+ * the function returns a Promise (an IPC call), so the type allows both.
+ */
+type Unlisten = () => void | Promise<void>;
+
 /**
  * Best-effort message of a thrown or rejected value, for the warning.
  *
@@ -39,19 +48,39 @@ function messageOf(thrown: unknown): string {
 }
 
 /**
+ * Call one native unlisten and wait for it. A synchronous throw or a rejection is logged at
+ * warn and is not an error: the app is stopping anyway.
+ *
+ * @param {LogApi} log - ctx.log for the warning (MC2).
+ * @param {Unlisten} unlisten - The unlisten function `listen` resolved with.
+ * @returns {Promise<void>} Resolves once the native listener is gone or the failure is logged.
+ * @example
+ * ```ts
+ * await unlistenSafely(log, unlisten); // an IPC rejection becomes a warn, never a rejection
+ * ```
+ */
+async function unlistenSafely(log: LogApi, unlisten: Unlisten): Promise<void> {
+  try {
+    await unlisten();
+  } catch (error) {
+    log.warn(UNLISTEN_FAILED, { message: messageOf(error) });
+  }
+}
+
+/**
  * Listen to the native suspend/resume events. Each listener that registers is kept, even when
  * the other one fails. A failed import or a rejected `listen` is logged once at warn and is not
  * an error: the visibility source still covers the app.
  *
  * @param {LogApi} log - ctx.log for the warning (MC2).
  * @param {LifecycleSignal} signal - Where each phase goes.
- * @returns {Promise<Array<() => void>>} The unlisten functions of the listeners that registered.
+ * @returns {Promise<Unlisten[]>} The unlisten functions of the listeners that registered.
  * @example
  * ```ts
  * const unlisteners = await listenNative(log, phase => phases.push(phase)); // 2 on a Tauri shell
  * ```
  */
-async function listenNative(log: LogApi, signal: LifecycleSignal): Promise<Array<() => void>> {
+async function listenNative(log: LogApi, signal: LifecycleSignal): Promise<Unlisten[]> {
   try {
     const { listen } = await import("@tauri-apps/api/event");
     const results = await Promise.allSettled([
@@ -74,8 +103,8 @@ async function listenNative(log: LogApi, signal: LifecycleSignal): Promise<Array
 /**
  * Create the Tauri lifecycle provider: the visibility source plus the native suspend/resume
  * events, on every platform. Never fails because of the native channel: without it the
- * provider runs on visibility alone. dispose removes the DOM listener and calls each unlisten
- * once.
+ * provider runs on visibility alone. dispose removes the DOM listener, calls each unlisten
+ * once and waits for it; a failed unlisten only warns.
  *
  * @param {LogApi} log - ctx.log for the warning when the native events are unavailable (MC2).
  * @param {LifecycleSignal} signal - Where each phase goes (createSignal dedupes).
@@ -99,10 +128,12 @@ export async function createTauriLifecycleProvider(
 
   return {
     /**
-     * Teardown — removes the `visibilitychange` listener and calls each native unlisten once.
-     * Idempotent: a second call does nothing.
+     * Teardown — removes the `visibilitychange` listener and calls each native unlisten once,
+     * in parallel. A throwing or rejecting unlisten is logged at warn
+     * (`lifecycle:tauri-unlisten-failed`) and never rejects dispose. Idempotent: a second call
+     * does nothing.
      *
-     * @returns {Promise<void>} Resolves once every listener is gone.
+     * @returns {Promise<void>} Resolves once every native unlisten has settled.
      * @example
      * ```ts
      * await provider.dispose(); // tauri://suspended and a hidden window no longer report "pause"
@@ -115,9 +146,7 @@ export async function createTauriLifecycleProvider(
       disposed = true;
 
       stopWatching();
-      for (const unlisten of unlisteners) {
-        unlisten();
-      }
+      await Promise.all(unlisteners.map(unlisten => unlistenSafely(log, unlisten)));
     }
   };
 }

@@ -23,6 +23,19 @@ import { createFakeDocument, createMockCtx, createMockLog } from "./test-helpers
 const SUSPENDED = "tauri://suspended";
 const RESUMED = "tauri://resumed";
 
+/** Make every native listener return the given unlisten. */
+function useUnlisten(unlisten: () => Promise<void>): void {
+  mockListen.mockImplementation(async (event: string, handler: () => void) => {
+    nativeHandlers.set(event, handler);
+    return unlisten;
+  });
+}
+
+/** Let Node run its unhandled-rejection check (it runs after the microtask queue). */
+async function flushMacrotask(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
 beforeEach(() => {
   nativeHandlers.clear();
   nativeUnlisteners.clear();
@@ -169,5 +182,89 @@ describe("createTauriLifecycleProvider", () => {
 
     expect(nativeUnlisteners.get(SUSPENDED)).toHaveBeenCalledTimes(1);
     expect(nativeUnlisteners.get(RESUMED)).toHaveBeenCalledTimes(1);
+  });
+
+  describe("dispose with the real @tauri-apps/api 2.x unlisten, which returns a Promise", () => {
+    it("a rejected unlisten only warns: dispose resolves and no rejection is left unhandled", async () => {
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      useUnlisten(
+        vi.fn(async (): Promise<void> => {
+          throw new Error("ipc closed");
+        })
+      );
+      const log = createMockLog();
+      const provider = await createTauriLifecycleProvider(log, vi.fn());
+
+      await expect(provider.dispose()).resolves.toBeUndefined();
+      await flushMacrotask();
+      process.off("unhandledRejection", unhandled);
+
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(log.warn).toHaveBeenCalledTimes(2);
+      expect(log.warn).toHaveBeenCalledWith("lifecycle:tauri-unlisten-failed", {
+        message: "ipc closed"
+      });
+    });
+
+    it("an unlisten that throws synchronously only warns, and the other unlisten still runs", async () => {
+      const throwing = vi.fn((): Promise<void> => {
+        throw new Error("sync boom");
+      });
+      const working = vi.fn(async (): Promise<void> => {});
+      mockListen.mockImplementation(async (event: string) =>
+        event === SUSPENDED ? throwing : working
+      );
+      const log = createMockLog();
+      const provider = await createTauriLifecycleProvider(log, vi.fn());
+
+      await expect(provider.dispose()).resolves.toBeUndefined();
+
+      expect(throwing).toHaveBeenCalledTimes(1);
+      expect(working).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith("lifecycle:tauri-unlisten-failed", {
+        message: "sync boom"
+      });
+    });
+
+    it("dispose resolves only after the async native unlisten finished", async () => {
+      const pending: Array<() => void> = [];
+      const unlisten = vi.fn(
+        () =>
+          new Promise<void>(resolve => {
+            pending.push(resolve);
+          })
+      );
+      useUnlisten(unlisten);
+      const provider = await createTauriLifecycleProvider(createMockLog(), vi.fn());
+      const order: string[] = [];
+
+      const disposing = provider.dispose().then(() => order.push("disposed"));
+      await flushMacrotask();
+      order.push("unlisten finished");
+      for (const finishUnlisten of pending) {
+        finishUnlisten();
+      }
+      await disposing;
+
+      expect(unlisten).toHaveBeenCalledTimes(2);
+      expect(order).toEqual(["unlisten finished", "disposed"]);
+    });
+
+    it("a second dispose does nothing: no unlisten call and no warning", async () => {
+      const unlisten = vi.fn(async (): Promise<void> => {
+        throw new Error("ipc closed");
+      });
+      useUnlisten(unlisten);
+      const log = createMockLog();
+      const provider = await createTauriLifecycleProvider(log, vi.fn());
+
+      await provider.dispose();
+      await provider.dispose();
+
+      expect(unlisten).toHaveBeenCalledTimes(2);
+      expect(log.warn).toHaveBeenCalledTimes(2);
+    });
   });
 });

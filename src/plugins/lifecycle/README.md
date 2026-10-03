@@ -87,7 +87,8 @@ None. Consumers use the callbacks; an event would be public forever.
 | Page or window hidden at start | one pause | one pause |
 | `@tauri-apps/api` missing, or `listen` rejected | `ctx.log.warn("lifecycle:tauri-events-unavailable", { message })`; runs on `visibilitychange` alone | — |
 | SSR (no `document`) | native events only | no listener |
-| `dispose()` (at `app.stop()`) | removes the DOM listener, calls each unlisten once; idempotent | removes the DOM listener |
+| `dispose()` (at `app.stop()`) | removes the DOM listener, calls each unlisten once and awaits it; idempotent | removes the DOM listener |
+| A native unlisten throws or rejects at `dispose()` | `ctx.log.warn("lifecycle:tauri-unlisten-failed", { message })`; `dispose()` still resolves | — |
 
 ## Platform support matrix
 
