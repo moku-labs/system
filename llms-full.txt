@@ -1,7 +1,7 @@
 # @moku-labs/system — full reference
 
-Isomorphic system API for Moku — store, tray, notify, clipboard, and deep-link
-capabilities behind an env-style provider seam (Tauri provider when the native shell is
+Isomorphic system API for Moku — store, tray, notify, clipboard, deep-link, lifecycle,
+back, haptics, and keepAwake capabilities behind an env-style provider seam (Tauri provider when the native shell is
 detected, web fallback otherwise). Same island code runs on web and native. Built on
 @moku-labs/core 1.5.0 (micro-kernel) and @moku-labs/common 0.3.0 (logPlugin -> ctx.log,
 envPlugin -> ctx.env). Package: @moku-labs/system 0.1.0.
@@ -12,6 +12,7 @@ Contents:
   3. Runtime core plugin (ctx.runtime)
   4. Capability plugins: full public types
      4.1 store  4.2 tray  4.3 notify  4.4 clipboard  4.5 deepLink
+     4.6 lifecycle  4.7 back  4.8 haptics  4.9 keepAwake
   5. Event catalog
   6. Config schema & defaults (pluginConfigs)
   7. Lifecycle & provider resolution semantics
@@ -35,6 +36,10 @@ Root entry "@moku-labs/system" (src/index.ts) — helpers + TYPES ONLY, zero cap
   export type * as Notify    from "./plugins/notify/types";
   export type * as Clipboard from "./plugins/clipboard/types";
   export type * as DeepLink  from "./plugins/deep-link/types";
+  export type * as Lifecycle from "./plugins/lifecycle/types";
+  export type * as Back      from "./plugins/back/types";
+  export type * as Haptics   from "./plugins/haptics/types";
+  export type * as KeepAwake from "./plugins/keep-awake/types";
   export type { JsonPrimitive, JsonValue, RuntimeKind, RuntimePlatform,
                 SystemErr, SystemErrorReason, SystemOk, SystemResult };
 
@@ -47,6 +52,10 @@ capabilities never enter your bundle):
   "@moku-labs/system/notify"    -> export { notifyPlugin };    export type * as Notify;
   "@moku-labs/system/clipboard" -> export { clipboardPlugin }; export type * as Clipboard;
   "@moku-labs/system/deep-link" -> export { deepLinkPlugin };  export type * as DeepLink;
+  "@moku-labs/system/lifecycle" -> export { lifecyclePlugin }; export type * as Lifecycle;
+  "@moku-labs/system/back"      -> export { backPlugin };      export type * as Back;
+  "@moku-labs/system/haptics"   -> export { hapticsPlugin };   export type * as Haptics;
+  "@moku-labs/system/keep-awake" -> export { keepAwakePlugin }; export type * as KeepAwake;
 
 All entries ship ESM (+ CJS) with types; "sideEffects": false.
 
@@ -112,13 +121,21 @@ Reason semantics (the error-mapping table):
   ------------- | -------------------------------------------------- | -------------------------------
   "unsupported" | capability permanently absent in this environment  | tray on web; tray on Tauri
                 |                                                    | mobile; navigator.clipboard
-                |                                                    | absent (insecure context)
+                |                                                    | absent (insecure context);
+                |                                                    | back.exit() off Tauri Android;
+                |                                                    | haptics on Tauri desktop or
+                |                                                    | without navigator.vibrate;
+                |                                                    | no navigator.wakeLock
   "denied"      | unambiguous permission refusal (returned signal,   | Notification permission not
-                | never inferred from a throw)                       | granted; clipboard NotAllowedError
+                | never inferred from a throw)                       | granted; clipboard NotAllowedError;
+                |                                                    | keepAwake NotAllowedError
   "unavailable" | environment cannot deliver right now               | provider failed to resolve;
                 |                                                    | app not started; stopped during
                 |                                                    | resolution; Safari private-mode
-                |                                                    | IndexedDB write-probe failure
+                |                                                    | IndexedDB write-probe failure;
+                |                                                    | haptics on web before the first
+                |                                                    | user gesture; keepAwake.set(true)
+                |                                                    | on a hidden page
   "error"       | provider threw during the operation                | any unexpected native/web throw;
                 |                                                    | raw message preserved in .message
 
@@ -172,10 +189,12 @@ object into a const instead of inlining it (see section 9).
 4. Capability plugins — full public types
 ====================================================================
 
-All five capability plugins share the same anatomy (Complex tier): index.ts defines the
+All nine capability plugins share the same anatomy (Complex tier): index.ts defines the
 plugin via createPlugin(name, { config?, createState, api, onInit?, onStart, onStop });
 onStart kicks off fire-and-forget provider resolution; every API method awaits the
-resolution slot and returns SystemResult. Provider interface types are STRUCTURAL and
+resolution slot and returns SystemResult. Exceptions: lifecycle's onPause / onResume,
+back's onPress and deepLink's onOpen are local, synchronous subscriptions that always
+succeed and return a remover, not a SystemResult. Provider interface types are STRUCTURAL and
 local — @tauri-apps/* types are never re-exported (.d.mts leakage guard).
 
 --------------------------------------------------------------------
@@ -387,6 +406,145 @@ Cross-repo note: on Windows/Linux the OS delivers deep-link URLs as CLI args to 
 process instance; single-instance forwarding is wired by the native packager repo.
 Until then, runtime deliveries on Windows/Linux may not arrive.
 
+--------------------------------------------------------------------
+4.6 lifecycle — plugin name "lifecycle", subpath "@moku-labs/system/lifecycle"
+--------------------------------------------------------------------
+Run code when the app goes to background and when it comes back. No SystemResult:
+subscribing is synchronous and always succeeds. Only the sources differ per runtime:
+  - kind "web": the page's visibilitychange. Hidden -> pause, visible -> resume.
+  - kind "tauri" (every platform): the same visibilitychange PLUS the native
+    tauri://suspended -> pause and tauri://resumed -> resume, from a lazy
+    import("@tauri-apps/api/event"). Rust emits Suspended/Resumed on mobile only, so
+    desktop Tauri runs on visibilitychange.
+  - @tauri-apps/api missing or listen rejected: logged at warn
+    (lifecycle:tauri-events-unavailable); runs on visibilitychange alone.
+One trip, one call: the plugin dedupes on transition. pause, pause -> one pause; a
+resume with no pause before it -> nothing. The app starts in the foreground, so every
+resume follows a pause. Subscribers run in subscription order; a subscriber that throws
+is logged (lifecycle:subscriber-failed) and the others still run. NO config, no events.
+onStop removes every OS and DOM listener, so no subscriber runs after app.stop().
+
+src/plugins/lifecycle/types.ts:
+
+  /** Removes one onPause / onResume subscription. */
+  export type Unsubscribe = () => void;
+
+  /** Lifecycle API — each trip is reported once, however many sources see it. */
+  export type LifecycleApi = {
+    /** Runs fn each time the app goes to background. Allowed before app.start(). */
+    onPause: (fn: () => void) => Unsubscribe;
+    /** Runs fn each time the app comes back. Same subscription rules as onPause. */
+    onResume: (fn: () => void) => Unsubscribe;
+  };
+
+--------------------------------------------------------------------
+4.7 back — plugin name "back", subpath "@moku-labs/system/back"
+--------------------------------------------------------------------
+Hardware Back press handlers and app exit. Selection is three-way, once, on ctx.runtime:
+  - kind "tauri", platform "android": lazy import("@tauri-apps/api/app") —
+    onBackButtonPress for the press, exit(0) to close the app.
+  - kind "tauri", any other platform: unsupportedProvider("tauri", ...).
+  - kind "web": the same stand-in for "web".
+On every provider onPress keeps the handlers; only the Android provider calls them.
+The native listener is registered ONLY while at least one handler exists and the app is
+started (registering any listener replaces the Android default). The last remover
+unregisters it, and the system Back comes back. When no handler takes a press, the
+provider replays the default: history.back() when the webview can go back, otherwise
+exit(0). NO config, no events.
+
+src/plugins/back/types.ts:
+
+  /** Removes the handler onPress registered. A second call does nothing. */
+  export type Unsubscribe = () => void;
+
+  /** Hardware Back API. Only Tauri Android has a hardware Back. */
+  export type BackApi = {
+    /**
+     * Register a press handler; it returns true when it took the press. Handlers run
+     * newest first, the first true stops the chain. A handler that throws is logged
+     * (back:subscriber-failed) and counts as false. Local and synchronous: works before
+     * app.start() and always succeeds.
+     */
+    onPress: (fn: () => boolean) => Unsubscribe;
+    /**
+     * Close the app. Tauri Android: exit(0) from @tauri-apps/api/app. Everywhere else:
+     * err(kind, "unsupported").
+     */
+    exit: () => Promise<SystemResult<void>>;
+  };
+
+exit() results:
+  - Tauri Android, exit requested -> ok(undefined, "tauri")
+  - Tauri Android, @tauri-apps/api older than 2.12 (no exit) ->
+    err("tauri", "unavailable", "exit() needs @tauri-apps/api 2.12 or newer")
+  - Tauri Android, exit throws (incl. a missing core:app:allow-exit) ->
+    err("tauri", "error", message) — never "denied"
+  - called after app.stop() -> err("tauri", "unavailable", "app stopped")
+
+--------------------------------------------------------------------
+4.8 haptics — plugin name "haptics", subpath "@moku-labs/system/haptics"
+--------------------------------------------------------------------
+Haptic feedback. Selection is three-way, once, from ctx.runtime:
+  - kind "tauri", platform ios or android: lazy import("@tauri-apps/plugin-haptics").
+    A command that resolves { status: "error", error } or throws -> "error", logged as
+    haptics:tauri-failed — never "denied".
+  - kind "tauri", any other platform: unsupportedProvider("tauri", ...); the plugin
+    package is never imported.
+  - kind "web": navigator.vibrate, feature-probed once. No vibrate (iOS Safari,
+    WKWebView, SSR) -> "unsupported". vibrate answering false (no user gesture yet) ->
+    err("web", "unavailable", "vibrate refused — needs a user gesture first").
+Web patterns (ms): impact light/medium/heavy 10/20/35; selection 5; notify success
+[15, 60, 15], warning [30, 60, 30], error [40, 60, 40, 60, 40]. The Tauri styles "soft"
+and "rigid" are left out on purpose. NO config, no events.
+
+src/plugins/haptics/types.ts:
+
+  /** How strong an impact tap is. */
+  export type ImpactKind = "light" | "medium" | "heavy";
+
+  /** The outcome a notification haptic conveys. */
+  export type NotifyKind = "success" | "warning" | "error";
+
+  /** Haptic feedback at app.haptics. Every method answers a SystemResult, never throws. */
+  export type HapticsApi = {
+    /** One tap for a physical moment. */
+    impact: (kind: ImpactKind) => Promise<SystemResult<void>>;
+    /** The pattern for the outcome of a task. */
+    notify: (kind: NotifyKind) => Promise<SystemResult<void>>;
+    /** The short tick for a changed selection. */
+    selection: () => Promise<SystemResult<void>>;
+  };
+
+--------------------------------------------------------------------
+4.9 keepAwake — plugin name "keepAwake", subpath "@moku-labs/system/keep-awake"
+--------------------------------------------------------------------
+Keeps the screen on through the Screen Wake Lock API (navigator.wakeLock). ONE provider
+for both kinds (providers/wake-lock.ts): the browser, and the same API inside the Tauri
+webview. No Tauri package import, no native code; kind only tags the results.
+set(true) records a wish that outlives a hidden page: the browser drops the lock when
+the page hides, and the plugin takes it again when the page is visible (a failed
+re-acquire is logged at warn, keepAwake:reacquire-failed). set(false) drops the wish and
+releases the lock. Two set(true) calls in flight share one request. NO config, no events.
+onStop removes the visibilitychange listener, releases the lock and drops the wish.
+
+src/plugins/keep-awake/types.ts:
+
+  /** Keep-awake API mounted at app.keepAwake. */
+  export type KeepAwakeApi = {
+    /** Keep the screen on (true) while the page is visible, or let it sleep (false). */
+    set: (on: boolean) => Promise<SystemResult<void>>;
+  };
+
+set() results:
+  - lock taken, already held, or set(false) -> ok(undefined)
+  - no navigator.wakeLock (SSR, Firefox before 126, old webview) -> err(kind, "unsupported")
+  - set(true) on a hidden page ->
+    err(kind, "unavailable", "page hidden — re-acquired when visible"), wish kept
+  - rejection named NotAllowedError (battery saver, permissions policy) ->
+    err(kind, "denied", message)
+  - any other rejection -> err(kind, "error", message), logged as keepAwake:request-failed
+  - set(true) after app.stop() -> err(kind, "unavailable", "app stopped")
+
 ====================================================================
 5. Event catalog
 ====================================================================
@@ -404,7 +562,8 @@ Islands/apps consume deliveries via app.deepLink.onOpen(cb). Plugins that declar
 depends: [deepLinkPlugin] additionally see the typed "deepLink:open" event in hooks
 (v1 ships no such edge — the event is island/app-facing plumbing).
 
-The other four capabilities are pure request/response and declare no events.
+The other eight capabilities declare no events. lifecycle and back use callbacks
+(onPause / onResume, onPress) instead.
 
 ====================================================================
 6. Config schema & defaults (pluginConfigs)
@@ -425,7 +584,8 @@ pluginConfigs, keyed by plugin name string:
                                                             // lowercase scheme pattern
   }
 
-notify and clipboard take NO config — they have no pluginConfigs entry.
+notify, clipboard, lifecycle, back, haptics and keepAwake take NO config — they have
+no pluginConfigs entry.
 
 ====================================================================
 7. Lifecycle & provider resolution semantics
@@ -445,6 +605,8 @@ notify and clipboard take NO config — they have no pluginConfigs entry.
       bundler string: '@tauri-apps/plugin-store is not installed. Add it to the app,
       or list "store" in @moku-labs/native config.system.' (the native entry is the
       Tauri plugin name: notify -> notification, clipboard -> clipboard-manager.)
+      lifecycle does not treat a missing @tauri-apps/api as an error: it warns and
+      runs on visibilitychange alone. keepAwake has no peer.
   await app.<capability>.<method>(...)
     - awaits the resolution slot (awaitProvider), then delegates to the provider.
     - before start(): resolves to { ok: false, reason: "unavailable",
@@ -460,7 +622,8 @@ notify and clipboard take NO config — they have no pluginConfigs entry.
       arrives after the timeout.
     - after dispose, a provider that freed a native resource (store, tray, deepLink)
       answers err(provider, "unavailable", "app stopped") on every method instead of
-      touching the freed handle.
+      touching the freed handle. back.exit() and keepAwake.set(true) answer the same
+      after app.stop().
     - teardown registries are per-app-instance (keyed by the app's frozen global
       config object) — multiple app instances never share resolution state.
 
@@ -618,11 +781,15 @@ Dependencies (bundled): @moku-labs/core 1.5.0, @moku-labs/common 0.3.0, idb-keyv
 Optional peer dependencies — ONLY needed in the native (Tauri) shell; dynamically
 imported inside Tauri providers; pure-web consumers skip them entirely:
 
-  @tauri-apps/api                        ^2.11.0
+  @tauri-apps/api                        ^2.12.0   (lifecycle, back; back.exit() uses
+                                                    exit, @since 2.12.0)
   @tauri-apps/plugin-store               ^2.4.0    (store)
   @tauri-apps/plugin-notification        ^2.3.0    (notify)
   @tauri-apps/plugin-clipboard-manager   ^2.3.0    (clipboard)
   @tauri-apps/plugin-deep-link           ^2.4.0    (deepLink)
+  @tauri-apps/plugin-haptics             ^2.4.0    (haptics)
+
+keepAwake has no peer dependency: navigator.wakeLock runs in the browser and the webview.
 
 Bundling for the web: every providers/index.ts reaches its Tauri provider through a lazy
 import("./tauri") — there is no static import of a @tauri-apps/* package anywhere outside
@@ -660,10 +827,21 @@ Cargo dependencies, plugin registrations — from the system plugins the app com
   tray       | core:tray:default, core:menu:default,       | no crate — Cargo features
              | core:image:default, core:resources:default  | tray-icon + image-png,
              |                                             | desktop targets only
+  lifecycle  | none beyond core:default                    | none
+             | (core:event:default)                        |
+  back       | core:app:allow-exit (listener permissions   | none — core API, Android only
+             | are in core:default)                        |
+  haptics    | haptics:allow-impact-feedback,              | tauri-plugin-haptics, init(),
+             | haptics:allow-notification-feedback,        | iOS + Android
+             | haptics:allow-selection-feedback,           |
+             | haptics:allow-vibrate (no default set)      |
+  keepAwake  | none                                        | none — navigator.wakeLock in
+             |                                             | the webview
 
   - clipboard-manager:default grants NOTHING; the two allow-* permissions are the real
     ones.
   - The core:* entries (tray's four, and core:event:default) all ship inside core:default.
+  - haptics has NO default permission set, so all four allow-* permissions are listed.
   - Deep links on Windows/Linux additionally need single-instance forwarding, wired by
     the packager.
 
@@ -677,3 +855,7 @@ which is not always this framework's plugin name:
   clipboard     | clipboard-manager
   tray          | tray
   deepLink      | deep-link
+  back          | back
+  haptics       | haptics
+  lifecycle     | — (not listed, no native plugin)
+  keepAwake     | — (not listed, no native plugin)

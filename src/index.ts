@@ -1,12 +1,13 @@
 // biome-ignore-all assist/source/organizeImports: section order (API → Plugins → Helpers → Types) is house style
 /**
  * @file `@moku-labs/system` — isomorphic system API (store, notify, clipboard, tray,
- * deep-link) behind a Tauri/web provider seam. The same island code runs on web and native.
+ * deep-link, lifecycle, back, haptics, keepAwake) behind a Tauri/web provider seam. The same island code runs on web and native.
  *
  * The root entry exports the bound {@link createApp} factory (the Layer-3 entry point),
  * {@link createPlugin} for consumer plugins, the `ok`/`err` result helpers, and the types.
  * It exports **no plugin instance**: each capability ships from its own subpath entry
- * (`@moku-labs/system/store`, `/tray`, `/notify`, `/clipboard`, `/deep-link`), so a
+ * (`@moku-labs/system/store`, `/tray`, `/notify`, `/clipboard`, `/deep-link`, `/lifecycle`,
+ * `/back`, `/haptics`, `/keep-awake`), so a
  * store-only consumer carries zero bytes of the other capabilities. `src/plugins/index.ts`
  * is the source-tree barrel; nothing here imports it.
  *
@@ -31,7 +32,7 @@
  * | `tray` | `{ id: string; icon?: string }` | `"moku-system"`; no `icon` = the app's default window icon |
  * | `deepLink` | `{ schemes: string[] }` | `[]` — accept every scheme |
  * | `runtime` | `{ forceKind, forcePlatform }` | `null` / `null` — auto-detect |
- * | `notify`, `clipboard` | — | no config |
+ * | `notify`, `clipboard`, `lifecycle`, `back`, `haptics`, `keepAwake` | — | no config |
  *
  * Providers resolve at `app.start()`, fire-and-forget: a failed or slow resolution folds
  * into the next call's `SystemResult`, never into a startup throw. `app.stop()` awaits the
@@ -93,6 +94,10 @@ export const createPlugin = framework.createPlugin;
 //   import { notifyPlugin }    from "@moku-labs/system/notify";
 //   import { clipboardPlugin } from "@moku-labs/system/clipboard";
 //   import { deepLinkPlugin }  from "@moku-labs/system/deep-link";
+//   import { lifecyclePlugin } from "@moku-labs/system/lifecycle";
+//   import { backPlugin }      from "@moku-labs/system/back";
+//   import { hapticsPlugin }   from "@moku-labs/system/haptics";
+//   import { keepAwakePlugin } from "@moku-labs/system/keep-awake";
 // Re-exporting them here leaked ~2 KB gzipped of unimported capability code into every
 // consumer bundle (measured), so the root stays instance-free.
 
@@ -107,8 +112,12 @@ export { err, ok } from "./plugins/runtime/result";
 // ─── Types ───────────────────────────────────────────────────
 // Per-capability type namespaces (type-only — zero bundle cost), accessed as
 // Store.StoreApi, Tray.TrayMenuItem, DeepLink.DeepLinkEvents, …
+export type * as Back from "./plugins/back/types";
 export type * as Clipboard from "./plugins/clipboard/types";
 export type * as DeepLink from "./plugins/deep-link/types";
+export type * as Haptics from "./plugins/haptics/types";
+export type * as KeepAwake from "./plugins/keep-awake/types";
+export type * as Lifecycle from "./plugins/lifecycle/types";
 export type * as Notify from "./plugins/notify/types";
 export type {
   JsonPrimitive,

@@ -1,7 +1,7 @@
 # @moku-labs/system
 
-> Isomorphic system API for Moku apps — store, tray, notify, clipboard, and deep-link
-> capabilities behind an env-style provider seam. A Tauri provider is selected when the
+> Isomorphic system API for Moku apps — store, tray, notify, clipboard, deep-link,
+> lifecycle, back, haptics, and keepAwake capabilities behind an env-style provider seam. A Tauri provider is selected when the
 > native shell is detected; a web provider is the fallback. The same island code runs
 > unchanged on web and native. Built on @moku-labs/core (micro-kernel) and
 > @moku-labs/common (logPlugin -> ctx.log, envPlugin -> ctx.env).
@@ -41,11 +41,15 @@ Every capability method returns SystemResult<T>:
 
 Reason semantics:
 - unsupported  — capability permanently absent here (tray on web; tray on Tauri
-                 iOS/Android; clipboard in insecure contexts). Hide the feature.
+                 iOS/Android; clipboard in insecure contexts; back.exit() off
+                 Tauri Android; haptics on Tauri desktop and iOS web). Hide the feature.
 - denied       — unambiguous permission refusal (notify permission not granted;
-                 clipboard NotAllowedError). Thrown errors are NEVER mapped to denied.
+                 clipboard NotAllowedError; keepAwake NotAllowedError). Thrown errors
+                 are NEVER mapped to denied.
 - unavailable  — environment cannot deliver right now (provider failed to resolve,
-                 app not started, Safari private-mode storage probe failed).
+                 app not started, Safari private-mode storage probe failed, haptics
+                 on web before the first user gesture, keepAwake.set(true) on a
+                 hidden page).
 - error        — provider threw during the operation; raw message preserved.
 
 Environmental failure is data. Programmer errors (e.g. empty store.name) still throw
@@ -61,19 +65,25 @@ Plugin INSTANCES are imported from subpaths, never the root:
     import { notifyPlugin }    from "@moku-labs/system/notify";
     import { clipboardPlugin } from "@moku-labs/system/clipboard";
     import { deepLinkPlugin }  from "@moku-labs/system/deep-link";
+    import { lifecyclePlugin } from "@moku-labs/system/lifecycle";
+    import { backPlugin }      from "@moku-labs/system/back";
+    import { hapticsPlugin }   from "@moku-labs/system/haptics";
+    import { keepAwakePlugin } from "@moku-labs/system/keep-awake";
 
 Why: a root barrel re-exporting instances leaked ~2 KB gz of unimported capability code
 into every consumer (measured). With subpaths, a store-only app carries zero bytes of
-tray/notify/clipboard/deep-link. Root also re-exports type namespaces: Store, Tray,
-Notify, Clipboard, DeepLink, plus SystemResult / SystemOk / SystemErr /
+tray/notify/clipboard/deep-link/lifecycle/back/haptics/keep-awake. Root also re-exports
+type namespaces: Store, Tray, Notify, Clipboard, DeepLink, Lifecycle, Back, Haptics,
+KeepAwake, plus SystemResult / SystemOk / SystemErr /
 SystemErrorReason / RuntimeKind / RuntimePlatform / JsonValue / JsonPrimitive.
 
 ### 4. Optional Tauri peers
 
-@tauri-apps/api, @tauri-apps/plugin-store, @tauri-apps/plugin-notification,
-@tauri-apps/plugin-clipboard-manager, @tauri-apps/plugin-deep-link are OPTIONAL peer
-dependencies — dynamically imported only inside Tauri providers when the native shell
-is detected. Pure-web consumers do not install them.
+@tauri-apps/api (^2.12.0), @tauri-apps/plugin-store, @tauri-apps/plugin-notification,
+@tauri-apps/plugin-clipboard-manager, @tauri-apps/plugin-deep-link,
+@tauri-apps/plugin-haptics (^2.4.0) are OPTIONAL peer dependencies — dynamically imported only inside Tauri providers when the native shell
+is detected. Pure-web consumers do not install them. back.exit() needs
+@tauri-apps/api 2.12 or newer (exit is @since 2.12.0). keepAwake has no peer at all.
 
 Bundling for the web: each providers/index.ts reaches its Tauri provider through a lazy
 import("./tauri"), so @tauri-apps/* lands in chunks a web build never executes — but the
@@ -100,7 +110,8 @@ them external:
 
 Calling a method before start() resolves to
 { ok: false, reason: "unavailable", message: "app not started — call app.start() first" }.
-After stop(), a provider that freed a native resource (store, tray, deepLink) resolves to
+After stop(), a provider that freed a native resource (store, tray, deepLink), plus
+back.exit() and keepAwake.set(true), resolves to
 { ok: false, reason: "unavailable", message: "app stopped" }. stop() itself is bounded: it
 waits at most 5000 ms for an in-flight resolution, warns, and moves on.
 A missing optional @tauri-apps/* peer is reported by name:
@@ -135,6 +146,23 @@ A missing optional @tauri-apps/* peer is reported by name:
     const url = await system.deepLink.getCurrent();       // SystemResult<string | null>
     const unsub = system.deepLink.onOpen(({ url }) => route(url));  // sync, always succeeds
     unsub();
+
+    // lifecycle — background / foreground; sync, always succeeds, no SystemResult
+    const offPause = system.lifecycle.onPause(() => game.pause());    // () => void
+    const offResume = system.lifecycle.onResume(() => game.resume());
+
+    // back — hardware Back; handlers run only on Tauri Android
+    const offBack = system.back.onPress(() => { popup.close(); return true; }); // true = taken
+    await system.back.exit();      // SystemResult<void>; err("unsupported") off Tauri Android
+
+    // haptics — Tauri iOS/Android plugin, navigator.vibrate on web
+    await system.haptics.impact("light");      // "light" | "medium" | "heavy"
+    await system.haptics.notify("success");    // "success" | "warning" | "error"
+    await system.haptics.selection();          // SystemResult<void>
+
+    // keepAwake — Screen Wake Lock (browser and Tauri webview)
+    await system.keepAwake.set(true);          // SystemResult<void>
+    await system.keepAwake.set(false);
 
 ### Narrowing the result
 
@@ -192,9 +220,31 @@ One line each: purpose | tier | API | events.
               page URL, else ok(null) | Complex | getCurrent/onOpen(cb): Unsubscribe;
               config { schemes } default [] (empty = accept all, lowercase scheme
               pattern validated at onInit) | event "deepLink:open" { url: string }
+- lifecycle — run code when the app goes to background and comes back; web:
+              visibilitychange; Tauri: the same plus tauri://suspended / tauri://resumed,
+              deduped to one call per trip | Complex | onPause(fn): Unsubscribe,
+              onResume(fn): Unsubscribe — sync, always succeed; NO config | no events
+- back      — hardware Back press handlers + app exit; only Tauri Android calls handlers
+              and exits, web and other Tauri platforms answer exit() with "unsupported";
+              native listener registered only while at least one handler exists |
+              Complex | onPress(fn: () => boolean): Unsubscribe (newest first, first true
+              stops the chain), exit(): Promise<SystemResult<void>>; NO config | no events
+- haptics   — haptic feedback; Tauri iOS/Android via @tauri-apps/plugin-haptics,
+              navigator.vibrate on web (Android browsers), "unsupported" on Tauri desktop
+              and where vibrate is absent (iOS Safari, WKWebView); vibrate refused before
+              the first user gesture -> "unavailable" | Complex |
+              impact("light"|"medium"|"heavy"), notify("success"|"warning"|"error"),
+              selection(); NO config | no events
+- keepAwake — keep the screen on via the Screen Wake Lock API (navigator.wakeLock) in
+              the browser and inside the Tauri webview; one provider for both kinds; the
+              wish is re-acquired when the page is visible again; NotAllowedError ->
+              "denied", hidden page -> "unavailable", no wakeLock -> "unsupported" |
+              Complex | set(on: boolean): Promise<SystemResult<void>>; NO config |
+              no events
 
 Naming: plugin name string "deepLink", directory src/plugins/deep-link/, subpath
-"@moku-labs/system/deep-link", event "deepLink:open".
+"@moku-labs/system/deep-link", event "deepLink:open". Plugin name string "keepAwake",
+directory src/plugins/keep-awake/, subpath "@moku-labs/system/keep-awake".
 
 ## Native permissions
 
@@ -212,9 +262,20 @@ the app composes.
                |                                             | schemes in the Tauri config
     tray       | core:tray:default, core:menu:default,       | no crate — Cargo features
                | core:image:default, core:resources:default  | tray-icon + image-png, desktop only
+    lifecycle  | none beyond core:default                    | none
+               | (core:event:default)                        |
+    back       | core:app:allow-exit (listener permissions   | none — core API, Android only
+               | are in core:default)                        |
+    haptics    | haptics:allow-impact-feedback,              | tauri-plugin-haptics, init(),
+               | haptics:allow-notification-feedback,        | iOS + Android
+               | haptics:allow-selection-feedback,           |
+               | haptics:allow-vibrate (no default set)      |
+    keepAwake  | none                                        | none — navigator.wakeLock in
+               |                                             | the webview
 
 - clipboard-manager:default grants NOTHING; the two allow-* permissions are the real ones.
 - The core:* entries (tray's four, and core:event:default) all ship inside core:default.
+- haptics has NO default permission set, so all four allow-* permissions are listed.
 - Deep links on Windows/Linux also need single-instance forwarding, wired by the packager.
 
 Cross-repo naming — @moku-labs/native keys config.system by the Tauri plugin name:
@@ -225,6 +286,10 @@ Cross-repo naming — @moku-labs/native keys config.system by the Tauri plugin n
     clipboard     | clipboard-manager
     tray          | tray
     deepLink      | deep-link
+    back          | back
+    haptics       | haptics
+    lifecycle     | — (not listed, no native plugin)
+    keepAwake     | — (not listed, no native plugin)
 
 ## File structure
 
@@ -236,6 +301,10 @@ Cross-repo naming — @moku-labs/native keys config.system by the Tauri plugin n
     src/notify.ts                subpath entry @moku-labs/system/notify
     src/clipboard.ts             subpath entry @moku-labs/system/clipboard
     src/deep-link.ts             subpath entry @moku-labs/system/deep-link
+    src/lifecycle.ts             subpath entry @moku-labs/system/lifecycle
+    src/back.ts                  subpath entry @moku-labs/system/back
+    src/haptics.ts               subpath entry @moku-labs/system/haptics
+    src/keep-awake.ts            subpath entry @moku-labs/system/keep-awake
     src/plugins/runtime/         core plugin + shared seam modules:
       result.ts                  SystemResult contract + ok/err helpers (public)
       provider.ts                resolution lifecycle (internal, not exported)
@@ -256,7 +325,8 @@ Cross-repo naming — @moku-labs/native keys config.system by the Tauri plugin n
   console.*); ctx.env (never raw process.env).
 - Provider interface types are structural and local — @tauri-apps/* types are never
   re-exported (d.mts leakage guard).
-- notify and clipboard take no config; they are excluded from pluginConfigs.
+- notify, clipboard, lifecycle, back, haptics and keepAwake take no config; they are
+  excluded from pluginConfigs.
 - deepLink onOpen subscription is local and synchronous (always succeeds); on web no
   push deliveries occur in v1. Windows/Linux runtime delivery requires single-instance
   forwarding wired by the native packager repo.

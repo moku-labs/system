@@ -1,7 +1,7 @@
 {
   "name": "@moku-labs/system",
   "version": "0.1.0",
-  "description": "Isomorphic system API for Moku — store, notify, clipboard, tray, and deep-link capabilities via an env-style provider pattern (Tauri provider when the shell is detected, web fallback otherwise). Same island code runs on web and native.",
+  "description": "Isomorphic system API for Moku — store, notify, clipboard, tray, deep-link, lifecycle, back, haptics, and keep-awake capabilities via an env-style provider pattern (Tauri provider when the shell is detected, web fallback otherwise). Same island code runs on web and native.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -66,6 +66,46 @@
         "types": "./dist/deep-link.d.cts",
         "default": "./dist/deep-link.cjs"
       }
+    },
+    "./lifecycle": {
+      "import": {
+        "types": "./dist/lifecycle.d.mts",
+        "default": "./dist/lifecycle.mjs"
+      },
+      "require": {
+        "types": "./dist/lifecycle.d.cts",
+        "default": "./dist/lifecycle.cjs"
+      }
+    },
+    "./back": {
+      "import": {
+        "types": "./dist/back.d.mts",
+        "default": "./dist/back.mjs"
+      },
+      "require": {
+        "types": "./dist/back.d.cts",
+        "default": "./dist/back.cjs"
+      }
+    },
+    "./haptics": {
+      "import": {
+        "types": "./dist/haptics.d.mts",
+        "default": "./dist/haptics.mjs"
+      },
+      "require": {
+        "types": "./dist/haptics.d.cts",
+        "default": "./dist/haptics.cjs"
+      }
+    },
+    "./keep-awake": {
+      "import": {
+        "types": "./dist/keep-awake.d.mts",
+        "default": "./dist/keep-awake.mjs"
+      },
+      "require": {
+        "types": "./dist/keep-awake.d.cts",
+        "default": "./dist/keep-awake.cjs"
+      }
     }
   },
   "files": [
@@ -105,9 +145,10 @@
     "@arethetypeswrong/core": "0.18.3",
     "@biomejs/biome": "2.4.16",
     "@moku-labs/ci": "1.2.6",
-    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-clipboard-manager": "2.3.2",
     "@tauri-apps/plugin-deep-link": "2.4.9",
+    "@tauri-apps/plugin-haptics": "2.4.1",
     "@tauri-apps/plugin-notification": "2.3.3",
     "@tauri-apps/plugin-store": "2.4.3",
     "@types/bun": "1.3.14",
@@ -133,9 +174,10 @@
     "idb-keyval": "6.3.0"
   },
   "peerDependencies": {
-    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/api": "^2.12.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.0",
     "@tauri-apps/plugin-deep-link": "^2.4.0",
+    "@tauri-apps/plugin-haptics": "^2.4.0",
     "@tauri-apps/plugin-notification": "^2.3.0",
     "@tauri-apps/plugin-store": "^2.4.0"
   },
@@ -147,6 +189,9 @@
       "optional": true
     },
     "@tauri-apps/plugin-deep-link": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-haptics": {
       "optional": true
     },
     "@tauri-apps/plugin-notification": {

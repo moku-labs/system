@@ -9,7 +9,11 @@ export default defineConfig({
     tray: "src/tray.ts",
     notify: "src/notify.ts",
     clipboard: "src/clipboard.ts",
-    "deep-link": "src/deep-link.ts"
+    "deep-link": "src/deep-link.ts",
+    lifecycle: "src/lifecycle.ts",
+    back: "src/back.ts",
+    haptics: "src/haptics.ts",
+    "keep-awake": "src/keep-awake.ts"
   },
   format: ["esm", "cjs"],
   dts: true,
