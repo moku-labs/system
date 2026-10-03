@@ -215,6 +215,51 @@ describe("createTauriBackProvider", () => {
       );
     });
 
+    it("keeps the handle when unregister fails, so a later listen does not register twice", async () => {
+      mockUnregister.mockRejectedValueOnce(new Error("listener already gone"));
+      const provider = await createTauriBackProvider(createMockLog());
+      await provider.listen(() => true);
+
+      await provider.unlisten();
+      const result = await provider.listen(() => true);
+
+      expect(result).toEqual({ ok: true, value: undefined, provider: "tauri" });
+      expect(mockOnBackButtonPress).toHaveBeenCalledTimes(1);
+    });
+
+    it("after a failed unregister, dispose unregisters the kept handle exactly once", async () => {
+      mockUnregister.mockRejectedValueOnce(new Error("listener already gone"));
+      const provider = await createTauriBackProvider(createMockLog());
+      await provider.listen(() => true);
+      await provider.unlisten();
+
+      await provider.dispose();
+      const result = await provider.unlisten();
+
+      expect(result).toEqual({ ok: true, value: undefined, provider: "tauri" });
+      expect(mockUnregister).toHaveBeenCalledTimes(2);
+    });
+
+    it("an unregister that fails after dispose does not bring the handle back", async () => {
+      let fail: ((error: Error) => void) | undefined;
+      mockUnregister.mockImplementationOnce(
+        async () =>
+          new Promise<undefined>((_resolve, reject) => {
+            fail = reject;
+          })
+      );
+      const provider = await createTauriBackProvider(createMockLog());
+      await provider.listen(() => true);
+
+      const pending = provider.unlisten();
+      await provider.dispose();
+      fail?.(new Error("listener already gone"));
+      await pending;
+      await provider.unlisten();
+
+      expect(mockUnregister).toHaveBeenCalledTimes(1);
+    });
+
     it("listens again after an unlisten", async () => {
       const provider = await createTauriBackProvider(createMockLog());
 

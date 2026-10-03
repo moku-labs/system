@@ -197,6 +197,9 @@ export async function createTauriBackProvider(log: LogApi): Promise<BackProvider
 
     /**
      * Unregister the native listener, which restores the system Back. Ok when none is held.
+     * When the unregister fails the native listener may still be live, so the handle is
+     * kept: a later `listen` reuses it instead of registering a second one, and `dispose`
+     * retries the unregister.
      *
      * @returns {Promise<SystemResult<void>>} ok once no listener is registered.
      * @example
@@ -204,10 +207,18 @@ export async function createTauriBackProvider(log: LogApi): Promise<BackProvider
      * await provider.unlisten(); // ok: the system Back works again
      * ```
      */
-    unlisten: (): Promise<SystemResult<void>> => {
+    unlisten: async (): Promise<SystemResult<void>> => {
       const current = listener;
+      if (current === undefined) {
+        return ok(undefined, PROVIDER);
+      }
       listener = undefined;
-      return current === undefined ? Promise.resolve(ok(undefined, PROVIDER)) : unregister(current);
+      const result = await unregister(current);
+      // Restore only when dispose() has not run and no new listen() took the slot meanwhile.
+      if (!result.ok && !disposed && listener === undefined) {
+        listener = current;
+      }
+      return result;
     },
 
     exit: exitApp,
