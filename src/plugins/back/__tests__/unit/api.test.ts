@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { err, ok } from "../../../runtime/result";
 import { createBackApi, dispatch } from "../../api";
@@ -128,6 +128,64 @@ describe("createBackApi", () => {
 
       expect(older).toHaveBeenCalledTimes(1);
       expect(ctx.state.handlers).toHaveLength(1);
+    });
+
+    describe("on an engine without Array.prototype.toReversed (pre-ES2023 WebView)", () => {
+      const original = Object.getOwnPropertyDescriptor(Array.prototype, "toReversed");
+
+      beforeEach(() => {
+        Reflect.deleteProperty(Array.prototype, "toReversed");
+      });
+
+      afterEach(() => {
+        if (original !== undefined) {
+          Object.defineProperty(Array.prototype, "toReversed", original);
+        }
+      });
+
+      it("offers the press newest first and stops at the handler that takes it", () => {
+        const ctx = createMockCtx();
+        const api = createBackApi(ctx);
+        const calls: string[] = [];
+        api.onPress(() => {
+          calls.push("oldest");
+          return true;
+        });
+        api.onPress(() => {
+          calls.push("middle");
+          return true;
+        });
+        api.onPress(() => {
+          calls.push("newest");
+          return false;
+        });
+
+        expect(dispatch(ctx)).toBe(true);
+        expect(calls).toEqual(["newest", "middle"]);
+      });
+
+      it("keeps the order when a handler removes itself during the press", () => {
+        const ctx = createMockCtx();
+        const api = createBackApi(ctx);
+        const calls: string[] = [];
+        api.onPress(() => {
+          calls.push("oldest");
+          return false;
+        });
+        const offSelf = api.onPress(() => {
+          calls.push("self");
+          offSelf();
+          return false;
+        });
+        api.onPress(() => {
+          calls.push("newest");
+          return false;
+        });
+
+        expect(dispatch(ctx)).toBe(false);
+        expect(calls).toEqual(["newest", "self", "oldest"]);
+        expect(ctx.state.handlers).toHaveLength(2);
+      });
     });
 
     it("onPress returns a remover synchronously, before app.start()", () => {

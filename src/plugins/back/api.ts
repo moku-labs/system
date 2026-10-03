@@ -61,8 +61,12 @@ function takesPress(ctx: BackContext, handler: () => boolean): boolean {
  * ```
  */
 export function dispatch(ctx: BackContext): boolean {
-  for (const handler of ctx.state.handlers.toReversed()) {
-    if (takesPress(ctx, handler)) {
+  // Snapshot: a handler may remove itself during the press. An index loop from the end
+  // instead of ES2023 `toReversed()`, which older Android WebViews lack.
+  const handlers = [...ctx.state.handlers];
+  for (let index = handlers.length - 1; index >= 0; index--) {
+    const handler = handlers[index];
+    if (handler !== undefined && takesPress(ctx, handler)) {
       return true;
     }
   }
