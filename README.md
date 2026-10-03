@@ -2,7 +2,7 @@
 
 **One system API, two runtimes — the same island code talks to the OS on native and degrades honestly on the web.**
 
-Isomorphic system capabilities for Moku apps — `store`, `tray`, `notify`, `clipboard`, and `deep-link` — behind an env-style provider seam: a **Tauri provider** when the native shell is detected, a **web provider** otherwise. Your islands never branch on the runtime; a capability that cannot work where it runs says so as typed data (`SystemResult`), never as a thrown surprise. It is not a UI framework and not a Tauri wrapper — it is the seam between your app and whatever shell it happens to be running in.
+Isomorphic system capabilities for Moku apps — `store`, `tray`, `notify`, `clipboard`, `deep-link`, `lifecycle`, `back`, `haptics`, and `keepAwake` — behind an env-style provider seam: a **Tauri provider** when the native shell is detected, a **web provider** otherwise. Your islands never branch on the runtime; a capability that cannot work where it runs says so as typed data (`SystemResult`), never as a thrown surprise. It is not a UI framework and not a Tauri wrapper — it is the seam between your app and whatever shell it happens to be running in.
 
 <br/>
 
@@ -22,7 +22,7 @@ Isomorphic system capabilities for Moku apps — `store`, `tray`, `notify`, `cli
 
 - **One codebase, web and native.** Every capability selects its provider once at startup (Tauri shell detected → native, otherwise → web). Island code calls the same `app.store.get(...)` everywhere — no second code path to keep in sync.
 - **Degraded capability is data, never a throw.** Every method returns `SystemResult<T>` — `{ ok: true, value }` or `{ ok: false, reason }` with a typed reason (`unsupported` / `denied` / `unavailable` / `error`). Tray on the web isn't a crash; it's an answer.
-- **Zero-leak bundles.** Plugin instances live at subpath exports (`@moku-labs/system/store`, …); the root exports only `createApp`, `createPlugin`, `ok`, `err`, and types. A store-only consumer carries zero bytes of tray/notify/clipboard/deep-link code.
+- **Zero-leak bundles.** Plugin instances live at subpath exports (`@moku-labs/system/store`, …); the root exports only `createApp`, `createPlugin`, `ok`, `err`, and types. A store-only consumer carries zero bytes of tray/notify/clipboard/deep-link/lifecycle/back/haptics/keep-awake code.
 - **Not a Tauri wrapper.** `@tauri-apps/*` packages are optional peer dependencies, dynamically imported only inside the Tauri providers. Pure-web consumers never install them — and never pay for them.
 - **Every exposed method genuinely works, or has a documented typed absence, on both providers.** No method that silently no-ops on one side.
 
@@ -36,11 +36,12 @@ Building the native shell too? Add the Tauri plugins the capabilities you compos
 
 ```sh
 bun add @tauri-apps/api @tauri-apps/plugin-store @tauri-apps/plugin-notification \
-        @tauri-apps/plugin-clipboard-manager @tauri-apps/plugin-deep-link
+        @tauri-apps/plugin-clipboard-manager @tauri-apps/plugin-deep-link \
+        @tauri-apps/plugin-haptics
 ```
 
 > [!NOTE]
-> **Status: `0.x` — early.** All `@tauri-apps/*` packages are **optional** peer dependencies — they are only loaded inside the Tauri providers, via dynamic import, when the native shell is actually detected. Pure-web consumers skip them entirely.
+> **Status: `0.x` — early.** All `@tauri-apps/*` packages are **optional** peer dependencies (`@tauri-apps/api` `^2.12.0`, `@tauri-apps/plugin-haptics` `^2.4.0`) — they are only loaded inside the Tauri providers, via dynamic import, when the native shell is actually detected. Pure-web consumers skip them entirely.
 
 ## Quick start
 
@@ -68,14 +69,14 @@ await system.stop();
 ```
 
 > [!IMPORTANT]
-> **Plugin instances are imported from subpaths** — `@moku-labs/system/store`, `/tray`, `/notify`, `/clipboard`, `/deep-link`. The root entry exports `createApp`, `createPlugin`, `ok`, `err`, and *types only*. Why: zero-leak bundles — a root barrel re-exporting instances leaked ~2 KB gzipped of unimported capability code into every consumer (measured); with subpaths, a store-only app carries none of the other capabilities.
+> **Plugin instances are imported from subpaths** — `@moku-labs/system/store`, `/tray`, `/notify`, `/clipboard`, `/deep-link`, `/lifecycle`, `/back`, `/haptics`, `/keep-awake`. The root entry exports `createApp`, `createPlugin`, `ok`, `err`, and *types only*. Why: zero-leak bundles — a root barrel re-exporting instances leaked ~2 KB gzipped of unimported capability code into every consumer (measured); with subpaths, a store-only app carries none of the other capabilities.
 
 ## How it works
 
 ```mermaid
 flowchart LR
   C["Your island code<br/>app.store.get(&quot;count&quot;)"] --> A["createApp<br/>(Layer 3 composition)"]
-  A --> P["capability plugins<br/>store · tray · notify · clipboard · deepLink"]
+  A --> P["capability plugins<br/>store · tray · notify · clipboard · deepLink<br/>lifecycle · back · haptics · keepAwake"]
   P --> R["runtime seam<br/>ctx.runtime — detected once"]
   R --> W["web provider<br/>(fallback)"]
   R --> T["Tauri provider<br/>(native shell)"]
@@ -103,10 +104,10 @@ type SystemResult<T> = SystemOk<T> | SystemErr;
 |---|---|---|
 | `unsupported` | The capability does not exist here — permanently (tray on web, tray on Tauri iOS/Android, clipboard in an insecure context). | Hide the feature. |
 | `denied` | The user or platform *unambiguously* refused permission (notification permission not granted, clipboard `NotAllowedError`). | Explain, or call `requestPermission()` deliberately. |
-| `unavailable` | The environment can't deliver *right now* — provider failed to resolve, app not started (`"app not started — call app.start() first"`), app already stopped (`"app stopped"`), Safari private-mode storage probe failed. | Retry later or degrade gracefully. |
+| `unavailable` | The environment can't deliver *right now* — provider failed to resolve, app not started (`"app not started — call app.start() first"`), app already stopped (`"app stopped"`), Safari private-mode storage probe failed, haptics on the web before the first user gesture. | Retry later or degrade gracefully. |
 | `error` | The provider threw during the operation; the raw message is preserved in `message`. | Log it (`ctx.log` already did) and recover. |
 
-After `app.stop()` a provider whose teardown released a native resource (`store`, `tray`, `deepLink`) answers `unavailable` / `"app stopped"` rather than touching a freed handle — an island that outlives the app gets a typed answer, not a crash. `app.stop()` itself waits at most 5 seconds for a provider still resolving, warns, and completes. A missing optional peer is named: `@tauri-apps/plugin-store is not installed. Add it to the app, or list "store" in @moku-labs/native config.system.`
+After `app.stop()` a provider whose teardown released a native resource (`store`, `tray`, `deepLink`, plus `back.exit()` and `keepAwake.set(true)`) answers `unavailable` / `"app stopped"` rather than touching a freed handle — an island that outlives the app gets a typed answer, not a crash. `app.stop()` itself waits at most 5 seconds for a provider still resolving, warns, and completes. A missing optional peer is named: `@tauri-apps/plugin-store is not installed. Add it to the app, or list "store" in @moku-labs/native config.system.`
 
 Environmental failure is data; **programmer errors still throw normally** (e.g. an empty `store.name` fails fast at `createApp` with a `TypeError`). Thrown provider errors are never mapped to `denied` — Tauri ACL throws are ambiguous, so `denied` is reserved for unambiguous returned permission signals.
 
@@ -121,6 +122,10 @@ Compose only what you need — each plugin mounts its API at `app.<name>`:
 | [`notifyPlugin`](./src/plugins/notify/README.md) | `@moku-labs/system/notify` | — (no config) | `show` / `requestPermission` / `isPermissionGranted` — explicit permission flow; `show()` never auto-prompts | — |
 | [`clipboardPlugin`](./src/plugins/clipboard/README.md) | `@moku-labs/system/clipboard` | — (no config) | `readText` / `writeText` — text only; feature-probed, `NotAllowedError` → `"denied"` | — |
 | [`deepLinkPlugin`](./src/plugins/deep-link/README.md) | `@moku-labs/system/deep-link` | `deepLink: { schemes }` (default `[]` = all) | `getCurrent` / `onOpen` — launch URL + runtime deliveries; only the one-time launch replay is deduped | `deepLink:open` |
+| [`lifecyclePlugin`](./src/plugins/lifecycle/README.md) | `@moku-labs/system/lifecycle` | — (no config) | `onPause` / `onResume` → remover — `tauri://suspended` / `tauri://resumed` + `visibilitychange`, deduped to one call per trip | — |
+| [`backPlugin`](./src/plugins/back/README.md) | `@moku-labs/system/back` | — (no config) | `onPress(fn → boolean)` → remover, `exit()` — Android in Tauri, `unsupported` elsewhere; native listener held only while a handler exists | — |
+| [`hapticsPlugin`](./src/plugins/haptics/README.md) | `@moku-labs/system/haptics` | — (no config) | `impact("light" \| "medium" \| "heavy")` / `notify("success" \| "warning" \| "error")` / `selection()` — Tauri iOS/Android plugin, `navigator.vibrate` on Android web, `unsupported` on iOS web | — |
+| [`keepAwakePlugin`](./src/plugins/keep-awake/README.md) | `@moku-labs/system/keep-awake` | — (no config) | `set(on)` — Screen Wake Lock in browser and webview, re-acquired when visible; `NotAllowedError` → `"denied"`, hidden page → `"unavailable"` | — |
 | [`runtime`](./src/plugins/runtime/README.md) *(core — auto-registered)* | — | `runtime: { forceKind, forcePlatform }` (default `null` = auto-detect) | `ctx.runtime.kind` / `ctx.runtime.platform` — the single override point for the whole seam | — |
 
 > [!NOTE]
@@ -140,8 +145,12 @@ Every capability that reaches the OS needs a Tauri ACL permission in the app's c
 | `clipboard` | `clipboard-manager:allow-read-text`, `clipboard-manager:allow-write-text` | `tauri-plugin-clipboard-manager` — `init()` |
 | `deepLink` | `deep-link:default`, `core:event:default` | `tauri-plugin-deep-link` — `init()`, schemes declared in the Tauri config |
 | `tray` | `core:tray:default`, `core:menu:default`, `core:image:default`, `core:resources:default` | no plugin crate — Cargo features `tray-icon` + `image-png`. Desktop only |
+| `lifecycle` | none beyond `core:default` (`core:event:default`) | none |
+| `back` | `core:app:allow-exit` (listener permissions are in `core:default`) | none — core API. Android only |
+| `haptics` | `haptics:allow-impact-feedback`, `haptics:allow-notification-feedback`, `haptics:allow-selection-feedback`, `haptics:allow-vibrate` (no default set exists) | `tauri-plugin-haptics` — `init()`. iOS + Android |
+| `keepAwake` | none | none — `navigator.wakeLock` in the webview |
 
-Two traps the table hides: `clipboard-manager:default` grants nothing, so the two `allow-*` permissions are the ones that matter; the `core:*` entries (tray's four, and `core:event:default`) all ship inside `core:default`. Deep links on Windows and Linux also need single-instance forwarding, which the packager wires.
+Two traps the table hides: `clipboard-manager:default` grants nothing, so the two `allow-*` permissions are the ones that matter; the `core:*` entries (tray's four, and `core:event:default`) all ship inside `core:default`. Haptics has no default permission set, so all four `allow-*` permissions are listed. Deep links on Windows and Linux also need single-instance forwarding, which the packager wires.
 
 The two sides name the plugins differently — `@moku-labs/native` keys its `config.system` by the Tauri plugin name:
 
@@ -152,6 +161,10 @@ The two sides name the plugins differently — `@moku-labs/native` keys its `con
 | `clipboard` | `clipboard-manager` |
 | `tray` | `tray` |
 | `deepLink` | `deep-link` |
+| `back` | `back` |
+| `haptics` | `haptics` |
+| `lifecycle` | — (not listed, no native plugin) |
+| `keepAwake` | — (not listed, no native plugin) |
 
 ## Usage
 
@@ -243,7 +256,7 @@ const app = createApp({ plugins: [storePlugin], pluginConfigs });
 ## Development
 
 ```sh
-bun run build              # Build with tsdown (root + 5 subpath entries)
+bun run build              # Build with tsdown (root + 9 subpath entries)
 bun run test               # All tests (vitest)
 bun run test:unit          # Unit tests only
 bun run test:integration   # Integration tests only
@@ -265,7 +278,7 @@ Built test-first. Plugin tests are colocated (`src/plugins/<name>/__tests__/unit
 
 ## Docs
 
-- Per-plugin READMEs: [store](./src/plugins/store/README.md) · [tray](./src/plugins/tray/README.md) · [notify](./src/plugins/notify/README.md) · [clipboard](./src/plugins/clipboard/README.md) · [deep-link](./src/plugins/deep-link/README.md) · [runtime](./src/plugins/runtime/README.md)
+- Per-plugin READMEs: [store](./src/plugins/store/README.md) · [tray](./src/plugins/tray/README.md) · [notify](./src/plugins/notify/README.md) · [clipboard](./src/plugins/clipboard/README.md) · [deep-link](./src/plugins/deep-link/README.md) · [lifecycle](./src/plugins/lifecycle/README.md) · [back](./src/plugins/back/README.md) · [haptics](./src/plugins/haptics/README.md) · [keep-awake](./src/plugins/keep-awake/README.md) · [runtime](./src/plugins/runtime/README.md)
 - [Moku Core specification](https://github.com/moku-labs/core/tree/main/specification) — the three-layer model, factory chain, lifecycle, events.
 - [`llms.txt`](./llms.txt) / [`llms-full.txt`](./llms-full.txt) — LLM-oriented API reference.
 
