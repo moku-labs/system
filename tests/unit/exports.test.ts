@@ -7,7 +7,11 @@ const CAPABILITY_INSTANCES = [
   "trayPlugin",
   "notifyPlugin",
   "clipboardPlugin",
-  "deepLinkPlugin"
+  "deepLinkPlugin",
+  "lifecyclePlugin",
+  "backPlugin",
+  "hapticsPlugin",
+  "keepAwakePlugin"
 ];
 
 describe("package export surface", () => {
@@ -27,8 +31,12 @@ describe("package export surface", () => {
   describe("src/plugins barrel", () => {
     it("re-exports every plugin instance in the source tree", () => {
       expect(Object.keys(pluginBarrel).toSorted()).toEqual([
+        "backPlugin",
         "clipboardPlugin",
         "deepLinkPlugin",
+        "hapticsPlugin",
+        "keepAwakePlugin",
+        "lifecyclePlugin",
         "notifyPlugin",
         "runtimePlugin",
         "storePlugin",
@@ -39,6 +47,20 @@ describe("package export surface", () => {
     it("re-exports the instances themselves, not copies", async () => {
       const { storePlugin } = await import("../../src/store");
       expect(pluginBarrel.storePlugin).toBe(storePlugin);
+    });
+
+    it("re-exports the same instances the new subpath entries ship", async () => {
+      const [{ lifecyclePlugin }, { backPlugin }, { hapticsPlugin }, { keepAwakePlugin }] =
+        await Promise.all([
+          import("../../src/lifecycle"),
+          import("../../src/back"),
+          import("../../src/haptics"),
+          import("../../src/keep-awake")
+        ]);
+      expect(pluginBarrel.lifecyclePlugin).toBe(lifecyclePlugin);
+      expect(pluginBarrel.backPlugin).toBe(backPlugin);
+      expect(pluginBarrel.hapticsPlugin).toBe(hapticsPlugin);
+      expect(pluginBarrel.keepAwakePlugin).toBe(keepAwakePlugin);
     });
   });
 });

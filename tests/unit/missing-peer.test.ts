@@ -43,11 +43,21 @@ vi.mock("@tauri-apps/plugin-deep-link", () => {
 vi.mock("@tauri-apps/api/tray", () => {
   throw missingModule("@tauri-apps/api/tray");
 });
+vi.mock("@tauri-apps/api/app", () => {
+  throw missingModule("@tauri-apps/api/app");
+});
+vi.mock("@tauri-apps/plugin-haptics", () => {
+  throw missingModule("@tauri-apps/plugin-haptics");
+});
 
+import { loadBackProvider } from "../../src/plugins/back/providers/index";
+import type { BackContext } from "../../src/plugins/back/types";
 import { loadClipboardProvider } from "../../src/plugins/clipboard/providers/index";
 import type { ClipboardContext } from "../../src/plugins/clipboard/types";
 import { loadDeepLinkProvider } from "../../src/plugins/deep-link/providers/index";
 import type { DeepLinkContext } from "../../src/plugins/deep-link/types";
+import { loadHapticsProvider } from "../../src/plugins/haptics/providers/index";
+import type { HapticsContext } from "../../src/plugins/haptics/types";
 import { loadNotifyProvider } from "../../src/plugins/notify/providers/index";
 import type { NotifyContext } from "../../src/plugins/notify/types";
 import type { RuntimeApi } from "../../src/plugins/runtime/types";
@@ -186,6 +196,34 @@ const CASES: readonly MissingPeerCase[] = [
         emit: vi.fn(),
         ...tauriBase()
       } satisfies TrayContext)
+  },
+  {
+    // back and haptics import their package only on mobile: on desktop they resolve the
+    // "unsupported" stand-in and never reach the import, so these rows run as Android.
+    capability: "back",
+    peer: "@tauri-apps/api",
+    nativeName: "back",
+    load: (): (() => Promise<unknown>) =>
+      loadBackProvider({
+        config: {},
+        state: { provider: null, handlers: [], listening: false, queue: Promise.resolve() },
+        emit: vi.fn(),
+        ...tauriBase(),
+        runtime: { kind: "tauri", platform: "android" }
+      } satisfies BackContext)
+  },
+  {
+    capability: "haptics",
+    peer: "@tauri-apps/plugin-haptics",
+    nativeName: "haptics",
+    load: (): (() => Promise<unknown>) =>
+      loadHapticsProvider({
+        config: {},
+        state: { provider: null },
+        emit: vi.fn(),
+        ...tauriBase(),
+        runtime: { kind: "tauri", platform: "android" }
+      } satisfies HapticsContext)
   }
 ];
 /* eslint-enable unicorn/no-null */
