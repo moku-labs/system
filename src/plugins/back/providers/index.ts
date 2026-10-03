@@ -25,7 +25,8 @@ import { createWebBackProvider } from "./web";
  * @example
  * ```ts
  * // ctx.runtime is { kind: "tauri", platform: "android" }: the real provider loads.
- * startResolution(ctx.runtime.kind, ctx, loadBackProvider(ctx));
+ * const provider = await loadBackProvider(ctx)();
+ * await provider.listen(() => true); // { ok: true, value: undefined, provider: "tauri" }
  * ```
  */
 export function loadBackProvider(ctx: BackContext): () => Promise<BackProvider> {

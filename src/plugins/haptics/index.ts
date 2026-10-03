@@ -16,7 +16,7 @@ const PLUGIN_NAME = "haptics";
 /**
  * Haptics capability plugin — impact, notify and selection feedback behind the Tauri/web
  * provider seam. Imported from `@moku-labs/system/haptics` and composed via
- * `createApp({ plugins: [hapticsPlugin] })`.
+ * `createApp({ plugins: [hapticsPlugin] })`; emits no events.
  *
  * @see README.md
  */

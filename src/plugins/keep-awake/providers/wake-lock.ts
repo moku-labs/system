@@ -252,7 +252,9 @@ async function keepLock(
  * @returns ok when the lock arrived, otherwise the mapped failure.
  * @example
  * ```ts
- * await requestLock(session); // { ok: true, value: undefined, provider: "web" }
+ * // A browser tab, battery saver on: the browser refuses the lock.
+ * await requestLock(session);
+ * // { ok: false, provider: "web", reason: "denied", message: "Battery saver is on" }
  * ```
  */
 async function requestLock(session: WakeLockSession): Promise<SystemResult<void>> {
@@ -291,8 +293,10 @@ function acquire(session: WakeLockSession): Promise<SystemResult<void>> {
  * @returns ok when the lock is held, otherwise a typed failure.
  * @example
  * ```ts
- * // A hidden page: the wish is kept and the lock comes when the page is visible again.
- * await holdScreen(session); // { ok: false, reason: "unavailable", message: HIDDEN_MESSAGE, … }
+ * // A hidden browser tab: no request is made, the wish is kept for the next visible.
+ * await holdScreen(session);
+ * // { ok: false, provider: "web", reason: "unavailable",
+ * //   message: "page hidden — re-acquired when visible" }
  * ```
  */
 async function holdScreen(session: WakeLockSession): Promise<SystemResult<void>> {
@@ -319,7 +323,9 @@ async function holdScreen(session: WakeLockSession): Promise<SystemResult<void>>
  * @returns ok, also when nothing was held.
  * @example
  * ```ts
- * await releaseScreen(session); // { ok: true, value: undefined, provider: "web" }, held or not
+ * // A browser tab holds a lock after set(true).
+ * await releaseScreen(session); // { ok: true, value: undefined, provider: "web" }
+ * session.sentinel; // undefined: the lock is released, the screen may sleep
  * ```
  */
 async function releaseScreen(session: WakeLockSession): Promise<SystemResult<void>> {
@@ -329,18 +335,35 @@ async function releaseScreen(session: WakeLockSession): Promise<SystemResult<voi
 }
 
 /**
+ * Whether a `visibilitychange` should take the lock again: the page is visible, the wish holds
+ * and no lock is held.
+ *
+ * @param session - The provider session.
+ * @returns True when a new `request("screen")` is due.
+ * @example
+ * ```ts
+ * // A visible tab after set(true); the browser dropped the lock while the tab was hidden.
+ * shouldReacquire(session); // true
+ * ```
+ */
+function shouldReacquire(session: WakeLockSession): boolean {
+  return !isPageHidden(session) && session.wanted && session.sentinel === undefined;
+}
+
+/**
  * `visibilitychange` handler: takes the lock again when the page is visible, the wish holds and
  * the browser dropped the lock. A failure is logged at warn, never thrown.
  *
  * @param session - The provider session.
  * @example
  * ```ts
- * // The page is back after the browser dropped the lock: one request("screen") follows.
+ * // set(true) held a lock, the tab hid and the browser dropped it. Now the tab is visible.
  * reacquireWhenVisible(session);
+ * await session.pending; // { ok: true, value: undefined, provider: "web" }: the lock is back
  * ```
  */
 function reacquireWhenVisible(session: WakeLockSession): void {
-  if (isPageHidden(session) || !session.wanted || session.sentinel !== undefined) {
+  if (!shouldReacquire(session)) {
     return;
   }
 

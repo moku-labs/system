@@ -11,7 +11,15 @@ import type { SystemResult } from "../runtime/result";
 import type { RuntimeApi } from "../runtime/types";
 import type { BackProvider } from "./providers/types";
 
-/** Removes the handler `onPress` registered. A second call does nothing. */
+/**
+ * Removes the handler `onPress` registered. A second call does nothing.
+ *
+ * @example
+ * ```ts
+ * const off: Unsubscribe = app.back.onPress(() => closePopup());
+ * off(); // the handler is gone
+ * ```
+ */
 export type Unsubscribe = () => void;
 
 /**

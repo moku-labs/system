@@ -56,8 +56,8 @@ function takesPress(ctx: BackContext, handler: () => boolean): boolean {
  * @returns {boolean} True when a handler took the press; false sends it to the platform default.
  * @example
  * ```ts
- * // Registered oldest first: () => false, then () => true.
- * dispatch(ctx); // true — the newest handler took the press, the older one never ran
+ * // Handlers, oldest first: closeMenu, then closePopup. A popup is open: closePopup returns true.
+ * dispatch(ctx); // true: closePopup took the press, closeMenu never ran
  * ```
  */
 export function dispatch(ctx: BackContext): boolean {
@@ -138,8 +138,8 @@ export function reconcile(ctx: BackContext): void {
  * @returns {BackApi} The back API surface.
  * @example
  * ```ts
- * const api = createBackApi(ctx);
- * const off = api.onPress(() => true); // Android: every press is taken until off()
+ * // Mounted as app.back. A browser, after app.start(): there is no hardware Back.
+ * await app.back.exit(); // { ok: false, provider: "web", reason: "unsupported" }
  * ```
  */
 export function createBackApi(ctx: BackContext): BackApi {

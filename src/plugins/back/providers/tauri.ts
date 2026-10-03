@@ -147,7 +147,10 @@ export async function createTauriBackProvider(log: LogApi): Promise<BackProvider
    * @returns {Promise<SystemResult<void>>} ok once the system Back is restored.
    * @example
    * ```ts
-   * await unregister(registered); // { ok: true, value: undefined, provider: "tauri" }
+   * // Android already dropped the native listener.
+   * await unregister(registered);
+   * // { ok: false, provider: "tauri", reason: "error", message: "listener already gone" },
+   * // also logged as "back:tauri-unlisten-failed"
    * ```
    */
   async function unregister(handle: BackListener): Promise<SystemResult<void>> {
@@ -215,7 +218,8 @@ export async function createTauriBackProvider(log: LogApi): Promise<BackProvider
       listener = undefined;
       const result = await unregister(current);
       // Restore only when dispose() has not run and no new listen() took the slot meanwhile.
-      if (!result.ok && !disposed && listener === undefined) {
+      const shouldKeepHandle = !result.ok && !disposed && listener === undefined;
+      if (shouldKeepHandle) {
         listener = current;
       }
       return result;

@@ -16,8 +16,9 @@ import { createWakeLockProvider } from "./wake-lock";
  * @returns The load closure for the wake-lock provider.
  * @example
  * ```ts
- * // The provider is created when startResolution calls the closure, not here.
- * startResolution(ctx.runtime.kind, ctx, loadKeepAwakeProvider(ctx));
+ * // ctx.runtime is { kind: "tauri", platform: "ios" }: the webview's wake lock holds the screen.
+ * const provider = await loadKeepAwakeProvider(ctx)();
+ * await provider.set(true); // { ok: true, value: undefined, provider: "tauri" }
  * ```
  */
 export function loadKeepAwakeProvider(ctx: KeepAwakeContext): () => Promise<KeepAwakeProvider> {

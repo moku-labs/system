@@ -19,7 +19,10 @@ import { createWebLifecycleProvider } from "./web";
  * @returns {() => Promise<LifecycleProvider>} The load closure for the selected provider.
  * @example
  * ```ts
- * startResolution(ctx.runtime.kind, ctx, loadLifecycleProvider(ctx, createSignal(ctx)));
+ * // ctx.runtime is { kind: "web", platform: "macos" }: visibility only, no native events.
+ * const provider = await loadLifecycleProvider(ctx, phase => phases.push(phase))();
+ * // the tab hides: phases is ["pause"]
+ * await provider.dispose(); // resolves undefined: later tab switches report nothing
  * ```
  */
 export function loadLifecycleProvider(

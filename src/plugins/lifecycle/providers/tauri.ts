@@ -56,7 +56,9 @@ function messageOf(thrown: unknown): string {
  * @returns {Promise<void>} Resolves once the native listener is gone or the failure is logged.
  * @example
  * ```ts
- * await unlistenSafely(log, unlisten); // an IPC rejection becomes a warn, never a rejection
+ * // The IPC channel closed: unlisten rejects with Error("ipc closed").
+ * await unlistenSafely(log, unlisten); // resolves undefined
+ * // log.warn("lifecycle:tauri-unlisten-failed", { message: "ipc closed" })
  * ```
  */
 async function unlistenSafely(log: LogApi, unlisten: Unlisten): Promise<void> {

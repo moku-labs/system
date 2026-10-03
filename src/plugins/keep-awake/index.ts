@@ -14,7 +14,8 @@ const PLUGIN_NAME = "keepAwake";
 
 /**
  * Keep-awake capability plugin — holds the screen on through `navigator.wakeLock`, in a browser
- * and inside the Tauri webview alike. Imported from `@moku-labs/system/keep-awake`.
+ * and inside the Tauri webview alike. Imported from `@moku-labs/system/keep-awake`; emits no
+ * events.
  *
  * @see README.md
  */

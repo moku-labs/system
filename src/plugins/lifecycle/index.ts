@@ -14,7 +14,8 @@ const PLUGIN_NAME = "lifecycle";
 
 /**
  * Lifecycle capability plugin — pause/resume subscriptions behind the Tauri/web provider seam.
- * Imported from `@moku-labs/system/lifecycle` and composed via `createApp({ plugins })`.
+ * Imported from `@moku-labs/system/lifecycle` and composed via `createApp({ plugins })`;
+ * emits no events.
  *
  * @see README.md
  */
