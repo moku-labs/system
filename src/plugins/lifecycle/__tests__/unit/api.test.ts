@@ -9,12 +9,15 @@ describe("createLifecycleApi", () => {
     it("adds the callback to the pause subscribers only", () => {
       const ctx = createMockCtx();
       const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
       const fn = vi.fn();
 
       api.onPause(fn);
+      signal("pause");
+      expect(fn).toHaveBeenCalledTimes(1);
 
-      expect(ctx.state.pauseSubscribers.has(fn)).toBe(true);
-      expect(ctx.state.resumeSubscribers.has(fn)).toBe(false);
+      signal("resume");
+      expect(fn).toHaveBeenCalledTimes(1);
     });
 
     it("returns a remover that deletes the callback", () => {
@@ -23,23 +26,26 @@ describe("createLifecycleApi", () => {
       const fn = vi.fn();
 
       const offPause = api.onPause(fn);
+      expect(ctx.state.pauseSubscribers.size).toBe(1);
       offPause();
 
-      expect(ctx.state.pauseSubscribers.has(fn)).toBe(false);
+      expect(ctx.state.pauseSubscribers.size).toBe(0);
     });
 
     it("a remover deletes only its own callback", () => {
       const ctx = createMockCtx();
       const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
       const first = vi.fn();
       const second = vi.fn();
 
       const offFirst = api.onPause(first);
       api.onPause(second);
       offFirst();
+      signal("pause");
 
-      expect(ctx.state.pauseSubscribers.has(first)).toBe(false);
-      expect(ctx.state.pauseSubscribers.has(second)).toBe(true);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
     });
 
     it("works before app.start() — subscribing never waits for a provider", () => {
@@ -57,26 +63,32 @@ describe("createLifecycleApi", () => {
     it("adds the callback to the resume subscribers only", () => {
       const ctx = createMockCtx();
       const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
       const fn = vi.fn();
 
       api.onResume(fn);
+      signal("pause");
+      expect(fn).not.toHaveBeenCalled();
 
-      expect(ctx.state.resumeSubscribers.has(fn)).toBe(true);
-      expect(ctx.state.pauseSubscribers.has(fn)).toBe(false);
+      signal("resume");
+      expect(fn).toHaveBeenCalledTimes(1);
     });
 
     it("a remover deletes only its own callback", () => {
       const ctx = createMockCtx();
       const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
       const first = vi.fn();
       const second = vi.fn();
 
       api.onResume(first);
       const offSecond = api.onResume(second);
       offSecond();
+      signal("pause");
+      signal("resume");
 
-      expect(ctx.state.resumeSubscribers.has(first)).toBe(true);
-      expect(ctx.state.resumeSubscribers.has(second)).toBe(false);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).not.toHaveBeenCalled();
     });
   });
 
@@ -159,6 +171,53 @@ describe("createLifecycleApi", () => {
       signal("pause");
 
       expect(later).not.toHaveBeenCalled();
+    });
+
+    it("the same fn subscribed twice runs twice per transition", () => {
+      const ctx = createMockCtx();
+      const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
+      const fn = vi.fn();
+      api.onPause(fn);
+      api.onPause(fn);
+
+      signal("pause");
+
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it("each remover of a twice-subscribed fn removes one subscription", () => {
+      const ctx = createMockCtx();
+      const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
+      const fn = vi.fn();
+      const offFirst = api.onResume(fn);
+      const offSecond = api.onResume(fn);
+
+      offFirst();
+      signal("pause");
+      signal("resume");
+      expect(fn).toHaveBeenCalledTimes(1);
+
+      offSecond();
+      signal("pause");
+      signal("resume");
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it("calling a remover twice does not remove the other subscription", () => {
+      const ctx = createMockCtx();
+      const api = createLifecycleApi(ctx);
+      const signal = createSignal(ctx);
+      const fn = vi.fn();
+      const offFirst = api.onPause(fn);
+      api.onPause(fn);
+
+      offFirst();
+      offFirst();
+      signal("pause");
+
+      expect(fn).toHaveBeenCalledTimes(1);
     });
 
     it("a subscriber added during a round waits for the next transition", () => {

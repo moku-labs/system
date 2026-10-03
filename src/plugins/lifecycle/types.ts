@@ -60,7 +60,8 @@ export type LifecycleApi = {
    * suspends the app. Local and synchronous, always succeeds. Allowed before `app.start()`;
    * `fn` starts firing once the provider is wired. One trip to background calls `fn` once, even
    * when two sources report it. A `fn` that throws is logged (`lifecycle:subscriber-failed`) and
-   * the other subscribers still run.
+   * the other subscribers still run. Each call is its own subscription: the same `fn` subscribed
+   * twice runs twice per trip, and each remover removes one of the two.
    *
    * @param {() => void} fn - Called on every pause.
    * @returns {Unsubscribe} Removes this subscription only.

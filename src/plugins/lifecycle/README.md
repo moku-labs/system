@@ -44,7 +44,7 @@ Types come from the root (`Lifecycle` namespace) or the subpath
 
 | Method | Signature | Notes |
 |--------|-----------|-------|
-| `onPause` | `(fn: () => void) => Unsubscribe` | `fn` runs each time the app goes to background. Local, synchronous, always succeeds. Allowed before `app.start()`. |
+| `onPause` | `(fn: () => void) => Unsubscribe` | `fn` runs each time the app goes to background. Local, synchronous, always succeeds. Allowed before `app.start()`. Each call is its own subscription: the same `fn` twice runs twice, and each remover removes one. |
 | `onResume` | `(fn: () => void) => Unsubscribe` | `fn` runs each time the app comes back. Same rules. |
 
 ```ts

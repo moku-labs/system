@@ -23,22 +23,40 @@ function toError(thrown: unknown): Error {
 }
 
 /**
- * Build a subscribe function over one subscriber set.
+ * Build a subscribe function over one subscriber set. Each call stores its own entry that calls
+ * `fn`, so the same `fn` subscribed twice runs twice, and each remover deletes only its own entry.
  *
  * @param {Set<() => void>} subscribers - The set the returned function adds to.
- * @returns {(fn: () => void) => Unsubscribe} Adds `fn`; the remover it returns deletes `fn` only.
+ * @returns {(fn: () => void) => Unsubscribe} Adds an entry for `fn`; the remover it returns
+ *   deletes that entry only.
  * @example
  * ```ts
  * const subscribers = new Set<() => void>();
- * const off = subscribeTo(subscribers)(() => undefined); // subscribers.size is 1
- * off(); // subscribers.size is 0
+ * const subscribe = subscribeTo(subscribers);
+ * const log = (): void => undefined;
+ * const offFirst = subscribe(log);
+ * subscribe(log); // subscribers.size is 2
+ * offFirst(); // subscribers.size is 1
  * ```
  */
 function subscribeTo(subscribers: Set<() => void>): (fn: () => void) => Unsubscribe {
   return fn => {
-    subscribers.add(fn);
+    /**
+     * This registration's own entry. A Set stores a repeated `fn` once; a fresh entry per call
+     * keeps two subscriptions of one `fn` apart.
+     *
+     * @returns {void} Nothing; it only calls `fn`.
+     * @example
+     * ```ts
+     * entry(); // calls fn once
+     * ```
+     */
+    const entry = (): void => {
+      fn();
+    };
+    subscribers.add(entry);
     return () => {
-      subscribers.delete(fn);
+      subscribers.delete(entry);
     };
   };
 }
