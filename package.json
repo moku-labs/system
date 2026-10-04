@@ -140,11 +140,51 @@
     "release:doctor": "moku-release doctor",
     "release": "moku-release"
   },
+  "dependencies": {
+    "idb-keyval": "6.3.0"
+  },
+  "peerDependencies": {
+    "@moku-labs/common": "^0.3.3",
+    "@moku-labs/core": "^1.7.1",
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.0",
+    "@tauri-apps/plugin-deep-link": "^2.4.0",
+    "@tauri-apps/plugin-haptics": "^2.4.0",
+    "@tauri-apps/plugin-notification": "^2.3.0",
+    "@tauri-apps/plugin-store": "^2.4.0"
+  },
+  "sideEffects": false,
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependenciesMeta": {
+    "@tauri-apps/api": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-clipboard-manager": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-deep-link": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-haptics": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-notification": {
+      "optional": true
+    },
+    "@tauri-apps/plugin-store": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.3",
     "@arethetypeswrong/core": "0.18.3",
     "@biomejs/biome": "2.4.16",
     "@moku-labs/ci": "1.2.6",
+    "@moku-labs/common": "0.3.3",
+    "@moku-labs/core": "1.7.1",
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-clipboard-manager": "2.3.2",
     "@tauri-apps/plugin-deep-link": "2.4.9",
@@ -167,43 +207,5 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.58.0",
     "vitest": "4.0.18"
-  },
-  "dependencies": {
-    "@moku-labs/common": "0.3.2",
-    "@moku-labs/core": "1.6.0",
-    "idb-keyval": "6.3.0"
-  },
-  "peerDependencies": {
-    "@tauri-apps/api": "^2.12.0",
-    "@tauri-apps/plugin-clipboard-manager": "^2.3.0",
-    "@tauri-apps/plugin-deep-link": "^2.4.0",
-    "@tauri-apps/plugin-haptics": "^2.4.0",
-    "@tauri-apps/plugin-notification": "^2.3.0",
-    "@tauri-apps/plugin-store": "^2.4.0"
-  },
-  "peerDependenciesMeta": {
-    "@tauri-apps/api": {
-      "optional": true
-    },
-    "@tauri-apps/plugin-clipboard-manager": {
-      "optional": true
-    },
-    "@tauri-apps/plugin-deep-link": {
-      "optional": true
-    },
-    "@tauri-apps/plugin-haptics": {
-      "optional": true
-    },
-    "@tauri-apps/plugin-notification": {
-      "optional": true
-    },
-    "@tauri-apps/plugin-store": {
-      "optional": true
-    }
-  },
-  "sideEffects": false,
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
   }
 }
