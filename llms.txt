@@ -4,9 +4,11 @@
 > lifecycle, back, haptics, and keepAwake capabilities behind an env-style provider seam. A Tauri provider is selected when the
 > native shell is detected; a web provider is the fallback. The same island code runs
 > unchanged on web and native. Built on @moku-labs/core (micro-kernel) and
-> @moku-labs/common (logPlugin -> ctx.log, envPlugin -> ctx.env).
+> @moku-labs/common (logPlugin -> ctx.log, envPlugin -> ctx.env) — both REQUIRED peer
+> dependencies, not bundled.
 
-Package: @moku-labs/system 0.1.0 (ESM + CJS, types included, sideEffects: false)
+Package: @moku-labs/system (ESM + CJS, types included, sideEffects: false)
+Install: bun add @moku-labs/system @moku-labs/core @moku-labs/common
 Repo: https://github.com/moku-labs/system
 Full reference: llms-full.txt
 
@@ -77,9 +79,12 @@ type namespaces: Store, Tray, Notify, Clipboard, DeepLink, Lifecycle, Back, Hapt
 KeepAwake, plus SystemResult / SystemOk / SystemErr /
 SystemErrorReason / RuntimeKind / RuntimePlatform / JsonValue / JsonPrimitive.
 
-### 4. Optional Tauri peers
+### 4. Peer dependencies
 
-@tauri-apps/api (^2.12.0), @tauri-apps/plugin-store, @tauri-apps/plugin-notification,
+Required peers (install them with the package; nothing from them is bundled):
+@moku-labs/core ^1.7.1 and @moku-labs/common ^0.3.4.
+
+Optional Tauri peers: @tauri-apps/api (^2.12.0), @tauri-apps/plugin-store, @tauri-apps/plugin-notification,
 @tauri-apps/plugin-clipboard-manager, @tauri-apps/plugin-deep-link,
 @tauri-apps/plugin-haptics (^2.4.0) are OPTIONAL peer dependencies — dynamically imported only inside Tauri providers when the native shell
 is detected. Pure-web consumers do not install them. back.exit() needs
@@ -207,15 +212,18 @@ One line each: purpose | tier | API | events.
               get/set/delete/keys/clear; config { name } default "moku-system" | no events
 - tray      — desktop tray icon + menu, created lazily on first mutating call; web and
               Tauri-mobile are all-unsupported (desktop allowlist: macos/windows/linux) |
-              Complex | setMenu/setTooltip/setIcon/destroy; config { id, icon? } defaults
-              "moku-system" and, with no icon, the app's default window icon | no events
+              Complex | setMenu/setTooltip/setIcon/destroy; config { id, icon? } (icon:
+              string | Uint8Array | number[]) defaults "moku-system" and, with no icon,
+              the app's default window icon | no events
 - notify    — OS/browser notifications, explicit permission flow (show never
               auto-prompts) | Complex | show/requestPermission/isPermissionGranted;
               NO config | no events
 - clipboard — text clipboard; feature-probed, NotAllowedError -> "denied" | Complex |
               readText/writeText; NO config | no events
-- deepLink  — deep-link URL delivery, the only push-driven capability; dedups ONLY the
-              one-time launch replay (a later repeat of the same URL is delivered); on the
+- deepLink  — deep-link URL delivery, the only push-driven capability; a launch URL
+              reaches the app exactly once (getCurrent() and onOpen share one handover
+              record during a 5 s launch phase; a later repeat of the same URL is
+              delivered); on the
               web getCurrent() reads an explicit ?deeplink= / #deeplink= parameter off the
               page URL, else ok(null) | Complex | getCurrent/onOpen(cb): Unsubscribe;
               config { schemes } default [] (empty = accept all, lowercase scheme
