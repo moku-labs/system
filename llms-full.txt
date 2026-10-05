@@ -5,6 +5,7 @@ back, haptics, and keepAwake capabilities behind an env-style provider seam (Tau
 detected, web fallback otherwise). Same island code runs on web and native. Built on
 @moku-labs/core ^1.7.1 (micro-kernel) and @moku-labs/common ^0.3.4 (logPlugin -> ctx.log,
 envPlugin -> ctx.env) — both required peer dependencies.
+Version: 0.3.1.
 Install: bun add @moku-labs/system @moku-labs/core @moku-labs/common
 
 Contents:
