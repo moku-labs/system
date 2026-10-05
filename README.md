@@ -29,8 +29,10 @@ Isomorphic system capabilities for Moku apps — `store`, `tray`, `notify`, `cli
 ## Install
 
 ```sh
-bun add @moku-labs/system
+bun add @moku-labs/system @moku-labs/core @moku-labs/common
 ```
+
+`@moku-labs/core` (`^1.7.1`) and `@moku-labs/common` (`^0.3.4`) are **required** peer dependencies — install them alongside the package so your app and every Moku framework share one copy.
 
 Building the native shell too? Add the Tauri plugins the capabilities you compose need:
 
@@ -41,7 +43,7 @@ bun add @tauri-apps/api @tauri-apps/plugin-store @tauri-apps/plugin-notification
 ```
 
 > [!NOTE]
-> **Status: `0.x` — early.** All `@tauri-apps/*` packages are **optional** peer dependencies (`@tauri-apps/api` `^2.12.0`, `@tauri-apps/plugin-haptics` `^2.4.0`) — they are only loaded inside the Tauri providers, via dynamic import, when the native shell is actually detected. Pure-web consumers skip them entirely.
+> **Status: `0.x` — early.** `@moku-labs/core` and `@moku-labs/common` are required peers; all `@tauri-apps/*` packages are **optional** peer dependencies (`@tauri-apps/api` `^2.12.0`, `@tauri-apps/plugin-haptics` `^2.4.0`) — they are only loaded inside the Tauri providers, via dynamic import, when the native shell is actually detected. Pure-web consumers skip them entirely.
 
 ## Quick start
 
@@ -273,7 +275,7 @@ Built test-first. Plugin tests are colocated (`src/plugins/<name>/__tests__/unit
 
 - **Node `>= 24`** and **Bun `>= 1.3.14`** — use `bun` exclusively (never npm/yarn/pnpm).
 - **TypeScript** in strict mode, with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`.
-- **[`@moku-labs/core`](https://github.com/moku-labs/core)** — the micro-kernel this framework is built on (bundled dependency).
+- **[`@moku-labs/core`](https://github.com/moku-labs/core) `^1.7.1`** and **[`@moku-labs/common`](https://github.com/moku-labs/common) `^0.3.4`** — required peer dependencies (see [Install](#install)).
 - **`@tauri-apps/*`** — optional peers, only in the native shell (see [Install](#install)).
 
 ## Docs

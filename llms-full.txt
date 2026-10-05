@@ -3,8 +3,9 @@
 Isomorphic system API for Moku — store, tray, notify, clipboard, deep-link, lifecycle,
 back, haptics, and keepAwake capabilities behind an env-style provider seam (Tauri provider when the native shell is
 detected, web fallback otherwise). Same island code runs on web and native. Built on
-@moku-labs/core 1.5.0 (micro-kernel) and @moku-labs/common 0.3.0 (logPlugin -> ctx.log,
-envPlugin -> ctx.env). Package: @moku-labs/system 0.1.0.
+@moku-labs/core ^1.7.1 (micro-kernel) and @moku-labs/common ^0.3.4 (logPlugin -> ctx.log,
+envPlugin -> ctx.env) — both required peer dependencies.
+Install: bun add @moku-labs/system @moku-labs/core @moku-labs/common
 
 Contents:
   1. Entry points & exports
@@ -255,14 +256,15 @@ src/plugins/tray/types.ts:
     /** OS-level tray identity. Validated non-empty at onInit. Default: "moku-system". */
     id: string;
     /**
-     * Status-item image: a path the app process can read, or bytes. Omit it to use the
-     * app's default window icon (defaultWindowIcon() from @tauri-apps/api/app) — the
-     * reliable default, since a relative path resolves against the process working
-     * directory, which a bundled app does not control. A macOS status item created with
-     * no icon at all is invisible. A missing image file resolves
+     * Status-item image: a path the app process can read, or the raw bytes of one —
+     * every form the native tray takes except its own `Image` resource (a @tauri-apps/api
+     * type this package never puts in its public surface). Omit it to use the app's
+     * default window icon — the reliable default, since a relative path resolves against
+     * the process working directory, which a bundled app does not control. A macOS status
+     * item created with no icon at all is invisible. A missing image file resolves
      * err("tauri", "unavailable", <message naming tray.icon>).
      */
-    icon?: string;
+    icon?: string | Uint8Array | number[];
   };
 
   /** Isomorphic tray menu item. action runs in the webview on click (Tauri desktop only). */
@@ -354,9 +356,14 @@ src/plugins/clipboard/types.ts:
 4.5 deepLink — plugin name "deepLink", subpath "@moku-labs/system/deep-link"
 --------------------------------------------------------------------
 Deep-link URL delivery — the only push-driven capability, and the only plugin that
-declares events. Dedup is REPLAY-ONLY: the first delivery is dropped when it equals the
-launch URL getCurrent() recorded, and the window closes immediately; a later repeat of
-the same URL is a real user action and IS delivered. On the web, getCurrent() reads an
+declares events. Dedup is LAUNCH-ONLY: each launch URL reaches the app exactly once,
+through whichever path sees it first — getCurrent() and the OS listener (onOpen) share
+one handover record (state.handedOver) for the duration of a 5000 ms launch phase. A
+URL getCurrent() already returned is dropped exactly once when the OS replays it onto
+the listener; a URL the listener delivered first makes getCurrent() resolve ok(null).
+A repeat of an already-delivered URL ends the launch phase and IS delivered — it is a
+real user action. After the launch phase every delivery reaches the app. No timer is
+armed; the deadline is checked lazily. On the web, getCurrent() reads an
 explicit ?deeplink= / #deeplink= parameter off the page URL (percent-encoded) and
 resolves ok(null) for an ordinary visit — the page's own address is never a deep link.
 Naming: plugin name string "deepLink", directory deep-link/, event "deepLink:open".
@@ -378,19 +385,30 @@ src/plugins/deep-link/types.ts:
   /** Unsubscribe function returned by onOpen. */
   export type Unsubscribe = () => void;
 
-  /** Internal deep-link state — resolution slot + launch-replay guard + island subscribers. */
+  /** Which path first handed a launch-phase URL to the app. */
+  export type HandoverPath = "get-current" | "on-open";
+
+  /** Millisecond clock backing the launch phase (injectable for tests). */
+  export type Clock = () => number;
+
+  /** Internal deep-link state — resolution slot + launch-phase handover record + subscribers. */
   export type DeepLinkState = ResolutionState<DeepLinkProvider> & {
-    /** The launch URL as read by getCurrent() — what the one-time replay is compared against. */
-    launchUrl: string | null;
-    /** Whether the first delivery has been seen, closing the one-time replay window. */
-    launchReplayDone: boolean;
-    /** onOpen() callbacks, notified after dedup + scheme filtering. */
+    /** Launch-phase URLs already handed to the app, keyed by the path that handed them over. */
+    handedOver: Map<string, HandoverPath>;
+    /** Whether the launch phase is still running (it ends early, or on the clock). */
+    launchPhaseOpen: boolean;
+    /** Clock deadline of the launch phase; null until the first launch-phase URL is seen. */
+    launchPhaseEndsAt: number | null;
+    /** onOpen() callbacks, notified after the handover guard + scheme filtering. */
     subscribers: Set<(payload: { url: string }) => void>;
   };
 
   /** Deep-link API — launch URL + runtime delivery subscription. */
   export type DeepLinkApi = {
-    /** The URL the app was launched with, scheme-filtered; ok(null) when none. */
+    /**
+     * The URL the app was launched with, scheme-filtered; ok(null) when none, filtered,
+     * or already delivered to the app through onOpen during the launch phase.
+     */
     getCurrent: () => Promise<SystemResult<string | null>>;
     /**
      * Subscribe to runtime deliveries. Local + synchronous (always succeeds); on web
@@ -577,8 +595,8 @@ pluginConfigs, keyed by plugin name string:
                  forcePlatform: RuntimePlatform | null },   // default null (auto-detect)
     store?:    { name: string },                            // default "moku-system";
                                                             // /^[a-z0-9][a-z0-9._-]*$/i
-    tray?:     { id: string; icon?: string },               // id default "moku-system",
-                                                            // non-empty; no icon = the app's
+    tray?:     { id: string;                                // id default "moku-system",
+                 icon?: string | Uint8Array | number[] },   // non-empty; no icon = the app's
                                                             // default window icon
     deepLink?: { schemes: string[] }                        // default [] (= accept all);
                                                             // lowercase scheme pattern
@@ -776,7 +794,14 @@ Rules for extensions:
 11. Peer dependencies, web bundling & environment
 ====================================================================
 
-Dependencies (bundled): @moku-labs/core 1.5.0, @moku-labs/common 0.3.0, idb-keyval 6.3.0.
+Required peer dependencies — installed by the app next to this package, never bundled:
+
+  @moku-labs/core                        ^1.7.1    (micro-kernel: createCoreConfig)
+  @moku-labs/common                      ^0.3.4    (logPlugin -> ctx.log, envPlugin -> ctx.env)
+
+  bun add @moku-labs/system @moku-labs/core @moku-labs/common
+
+Bundled dependency: idb-keyval 6.3.0 (web store provider).
 
 Optional peer dependencies — ONLY needed in the native (Tauri) shell; dynamically
 imported inside Tauri providers; pure-web consumers skip them entirely:
