@@ -83,7 +83,7 @@ None. Consumers use the callbacks; an event would be public forever.
 
 | Aspect | Tauri | Web |
 |--------|-------|-----|
-| Sources | `visibilitychange` + `tauri://suspended` / `tauri://resumed` | `visibilitychange` |
+| Sources | `visibilitychange` + `tauri://suspended` / `tauri://resumed` / `tauri://focus` (resumed and focus count only while the page shows) | `visibilitychange` |
 | Page or window hidden at start | one pause | one pause |
 | `@tauri-apps/api` missing, or `listen` rejected | `ctx.log.warn("lifecycle:tauri-events-unavailable", { message })`; runs on `visibilitychange` alone | — |
 | SSR (no `document`) | native events only | no listener |

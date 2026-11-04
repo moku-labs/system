@@ -21,6 +21,14 @@ const SUSPENDED_EVENT = "tauri://suspended";
 /** Native event for a resumed app (`TauriEvent.WINDOW_RESUMED` in `@tauri-apps/api` 2.12). */
 const RESUMED_EVENT = "tauri://resumed";
 
+/**
+ * Native event for a focused window (`TauriEvent.WINDOW_FOCUS` in `@tauri-apps/api` 2.12). On iOS
+ * tao sends `tauri://suspended` when the app resigns active, but `tauri://resumed` only on the way
+ * back from the background: an interruption that leaves the page visible (a screenshot, Control
+ * Center, a call banner) ends with this focus alone (F145).
+ */
+const FOCUS_EVENT = "tauri://focus";
+
 /** Log key for a native event channel that could not be opened. */
 const EVENTS_UNAVAILABLE = "lifecycle:tauri-events-unavailable";
 
@@ -70,7 +78,26 @@ async function unlistenSafely(log: LogApi, unlisten: Unlisten): Promise<void> {
 }
 
 /**
- * Listen to the native suspend/resume events. Each listener that registers is kept, even when
+ * Report "resume" only while the page shows. On the way back from the background iOS sends
+ * `tauri://resumed` while the page is still hidden; the visible change that follows resumes
+ * through the visibility source instead. Without a `document` (no page) the resume goes through.
+ *
+ * @param {LifecycleSignal} signal - Where the phase goes.
+ * @example
+ * ```ts
+ * resumeWhileShown(signal); // page hidden: nothing; page visible: signal("resume")
+ * ```
+ */
+function resumeWhileShown(signal: LifecycleSignal): void {
+  const doc = (globalThis as { document?: { readonly visibilityState: string } }).document;
+  if (doc?.visibilityState !== "hidden") {
+    signal("resume");
+  }
+}
+
+/**
+ * Listen to the native suspend/resume/focus events. Resumed and focus resume only while the page
+ * shows; a focus with nothing paused is dropped by the signal's dedupe. Each listener that registers is kept, even when
  * the other one fails. A failed import or a rejected `listen` is logged once at warn and is not
  * an error: the visibility source still covers the app.
  *
@@ -79,7 +106,7 @@ async function unlistenSafely(log: LogApi, unlisten: Unlisten): Promise<void> {
  * @returns {Promise<Unlisten[]>} The unlisten functions of the listeners that registered.
  * @example
  * ```ts
- * const unlisteners = await listenNative(log, phase => phases.push(phase)); // 2 on a Tauri shell
+ * const unlisteners = await listenNative(log, phase => phases.push(phase)); // 3 on a Tauri shell
  * ```
  */
 async function listenNative(log: LogApi, signal: LifecycleSignal): Promise<Unlisten[]> {
@@ -87,7 +114,8 @@ async function listenNative(log: LogApi, signal: LifecycleSignal): Promise<Unlis
     const { listen } = await import("@tauri-apps/api/event");
     const results = await Promise.allSettled([
       listen(SUSPENDED_EVENT, () => signal("pause")),
-      listen(RESUMED_EVENT, () => signal("resume"))
+      listen(RESUMED_EVENT, () => resumeWhileShown(signal)),
+      listen(FOCUS_EVENT, () => resumeWhileShown(signal))
     ]);
 
     const failure = results.find(result => result.status === "rejected");
