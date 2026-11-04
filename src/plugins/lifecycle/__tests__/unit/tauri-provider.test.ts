@@ -22,6 +22,7 @@ import { createFakeDocument, createMockCtx, createMockLog } from "./test-helpers
 
 const SUSPENDED = "tauri://suspended";
 const RESUMED = "tauri://resumed";
+const FOCUS = "tauri://focus";
 
 /** Make every native listener return the given unlisten. */
 function useUnlisten(unlisten: () => Promise<void>): void {
@@ -57,7 +58,8 @@ describe("createTauriLifecycleProvider", () => {
 
     expect(actual.TauriEvent.WINDOW_SUSPENDED).toBe(SUSPENDED);
     expect(actual.TauriEvent.WINDOW_RESUMED).toBe(RESUMED);
-    expect(mockListen).toHaveBeenCalledTimes(2);
+    expect(mockListen).toHaveBeenCalledTimes(3);
+    expect(mockListen).toHaveBeenCalledWith(FOCUS, expect.any(Function));
     expect(mockListen).toHaveBeenCalledWith(SUSPENDED, expect.any(Function));
     expect(mockListen).toHaveBeenCalledWith(RESUMED, expect.any(Function));
   });
@@ -172,6 +174,7 @@ describe("createTauriLifecycleProvider", () => {
     expect(doc.listenerCount()).toBe(0);
     expect(nativeUnlisteners.get(SUSPENDED)).toHaveBeenCalledTimes(1);
     expect(nativeUnlisteners.get(RESUMED)).toHaveBeenCalledTimes(1);
+    expect(nativeUnlisteners.get(FOCUS)).toHaveBeenCalledTimes(1);
   });
 
   it("dispose is idempotent: each unlisten runs once", async () => {
@@ -182,6 +185,7 @@ describe("createTauriLifecycleProvider", () => {
 
     expect(nativeUnlisteners.get(SUSPENDED)).toHaveBeenCalledTimes(1);
     expect(nativeUnlisteners.get(RESUMED)).toHaveBeenCalledTimes(1);
+    expect(nativeUnlisteners.get(FOCUS)).toHaveBeenCalledTimes(1);
   });
 
   describe("dispose with the real @tauri-apps/api 2.x unlisten, which returns a Promise", () => {
@@ -201,13 +205,13 @@ describe("createTauriLifecycleProvider", () => {
       process.off("unhandledRejection", unhandled);
 
       expect(unhandled).not.toHaveBeenCalled();
-      expect(log.warn).toHaveBeenCalledTimes(2);
+      expect(log.warn).toHaveBeenCalledTimes(3);
       expect(log.warn).toHaveBeenCalledWith("lifecycle:tauri-unlisten-failed", {
         message: "ipc closed"
       });
     });
 
-    it("an unlisten that throws synchronously only warns, and the other unlisten still runs", async () => {
+    it("an unlisten that throws synchronously only warns, and the other unlistens still run", async () => {
       const throwing = vi.fn((): Promise<void> => {
         throw new Error("sync boom");
       });
@@ -221,7 +225,7 @@ describe("createTauriLifecycleProvider", () => {
       await expect(provider.dispose()).resolves.toBeUndefined();
 
       expect(throwing).toHaveBeenCalledTimes(1);
-      expect(working).toHaveBeenCalledTimes(1);
+      expect(working).toHaveBeenCalledTimes(2);
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.warn).toHaveBeenCalledWith("lifecycle:tauri-unlisten-failed", {
         message: "sync boom"
@@ -248,7 +252,7 @@ describe("createTauriLifecycleProvider", () => {
       }
       await disposing;
 
-      expect(unlisten).toHaveBeenCalledTimes(2);
+      expect(unlisten).toHaveBeenCalledTimes(3);
       expect(order).toEqual(["unlisten finished", "disposed"]);
     });
 
@@ -263,8 +267,8 @@ describe("createTauriLifecycleProvider", () => {
       await provider.dispose();
       await provider.dispose();
 
-      expect(unlisten).toHaveBeenCalledTimes(2);
-      expect(log.warn).toHaveBeenCalledTimes(2);
+      expect(unlisten).toHaveBeenCalledTimes(3);
+      expect(log.warn).toHaveBeenCalledTimes(3);
     });
   });
 });

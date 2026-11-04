@@ -33,7 +33,7 @@ describe("loadLifecycleProvider", () => {
 
     const provider = await loadLifecycleProvider(ctx, vi.fn())();
 
-    expect(mockListen).toHaveBeenCalledTimes(2);
+    expect(mockListen).toHaveBeenCalledTimes(3);
     expect(doc.listenerCount()).toBe(1);
     await provider.dispose();
   });

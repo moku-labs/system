@@ -24,6 +24,7 @@ import { createFakeDocument } from "../unit/test-helpers";
 
 const SUSPENDED = "tauri://suspended";
 const RESUMED = "tauri://resumed";
+const FOCUS = "tauri://focus";
 
 /**
  * Framework-internal integration bootstrap (house style: framework `__tests__` may reuse
@@ -36,6 +37,20 @@ function buildLifecycleApp(runtime: Partial<RuntimeConfig>) {
     pluginConfigs: { runtime }
   });
   return framework.createApp();
+}
+
+/** Start an iOS Tauri app over the fake bridge, with counting subscribers. */
+async function startIos() {
+  const doc = createFakeDocument();
+  vi.stubGlobal("document", doc);
+  const app = buildLifecycleApp({ forceKind: "tauri", forcePlatform: "ios" });
+  const paused = vi.fn();
+  const resumed = vi.fn();
+  app.lifecycle.onPause(paused);
+  app.lifecycle.onResume(resumed);
+  await app.start();
+  await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(3));
+  return { app, doc, paused, resumed };
 }
 
 beforeEach(() => {
@@ -125,8 +140,8 @@ describe("complex tier: lifecycle plugin (integration)", () => {
       app.lifecycle.onPause(paused);
       app.lifecycle.onResume(resumed);
       await app.start();
-      // Resolution is fire-and-forget from onStart; wait until both native listeners exist.
-      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(2));
+      // Resolution is fire-and-forget from onStart; wait until all three native listeners exist.
+      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(3));
 
       nativeHandlers.get(SUSPENDED)?.();
       doc.setVisibility("hidden");
@@ -152,7 +167,7 @@ describe("complex tier: lifecycle plugin (integration)", () => {
       app.lifecycle.onPause(paused);
       app.lifecycle.onResume(resumed);
       await app.start();
-      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(3));
 
       doc.setVisibility("hidden");
       doc.setVisibility("visible");
@@ -171,7 +186,7 @@ describe("complex tier: lifecycle plugin (integration)", () => {
       const paused = vi.fn();
       app.lifecycle.onPause(paused);
       await app.start();
-      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(mockListen).toHaveBeenCalledTimes(3));
 
       doc.setVisibility("hidden");
 
@@ -179,6 +194,62 @@ describe("complex tier: lifecycle plugin (integration)", () => {
 
       await app.stop();
       expect(doc.listenerCount()).toBe(0);
+    });
+  });
+
+  describe("forceKind 'tauri' on iOS — interruptions that keep the page visible (F145)", () => {
+    it("a screenshot (blur, suspended, then focus alone, page visible) resumes once", async () => {
+      const { app, paused, resumed } = await startIos();
+
+      nativeHandlers.get(SUSPENDED)?.();
+      expect(paused).toHaveBeenCalledTimes(1);
+      nativeHandlers.get(FOCUS)?.();
+
+      expect(resumed).toHaveBeenCalledTimes(1);
+      await app.stop();
+      expect(nativeUnlisteners.get(FOCUS)).toHaveBeenCalledTimes(1);
+    });
+
+    it("Control Center, opened twice: each trip pauses once and resumes once", async () => {
+      const { app, paused, resumed } = await startIos();
+
+      for (let trip = 0; trip < 2; trip += 1) {
+        nativeHandlers.get(SUSPENDED)?.();
+        nativeHandlers.get(FOCUS)?.();
+        nativeHandlers.get(FOCUS)?.();
+      }
+
+      expect(paused).toHaveBeenCalledTimes(2);
+      expect(resumed).toHaveBeenCalledTimes(2);
+      await app.stop();
+    });
+
+    it("resumes once, when the page shows, after a trip to the background", async () => {
+      const { app, doc, paused, resumed } = await startIos();
+
+      // Measured on the simulator: suspended, hidden, resumed while hidden, visible, focus.
+      nativeHandlers.get(SUSPENDED)?.();
+      doc.setVisibility("hidden");
+      nativeHandlers.get(RESUMED)?.();
+      expect(resumed).not.toHaveBeenCalled();
+      doc.setVisibility("visible");
+      expect(resumed).toHaveBeenCalledTimes(1);
+      nativeHandlers.get(FOCUS)?.();
+
+      expect(paused).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledTimes(1);
+      await app.stop();
+    });
+
+    it("a focus while the page is hidden resumes nothing", async () => {
+      const { app, doc, resumed } = await startIos();
+
+      nativeHandlers.get(SUSPENDED)?.();
+      doc.setVisibility("hidden");
+      nativeHandlers.get(FOCUS)?.();
+
+      expect(resumed).not.toHaveBeenCalled();
+      await app.stop();
     });
   });
 
